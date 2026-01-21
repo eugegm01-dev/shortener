@@ -11,83 +11,111 @@ import (
 	"sync"
 )
 
-// Хранилище URL и счетчик с защитой мьютексом
-var (
-	urlStore   = make(map[string]string)
-	urlStoreMu sync.RWMutex
-	idCounter  int
-)
+// Хранилище URL с защитой мьютексом
+type URLStore struct {
+	store map[string]string
+	mu    sync.RWMutex
+}
 
-// generateShortID создает короткий уникальный идентификатор (например, 8 символов)
+func NewURLStore() *URLStore {
+	return &URLStore{
+		store: make(map[string]string),
+	}
+}
+
+func (s *URLStore) Save(url string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Генерация случайного короткого ID (8 символов)
+	shortID := generateShortID()
+	s.store[shortID] = url
+	return shortID
+}
+
+func (s *URLStore) Get(shortID string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	url, exists := s.store[shortID]
+	return url, exists
+}
+
+// Генерация случайного короткого ID (например, EwHXdJfB)
 func generateShortID() string {
-	// Генерируем 6 случайных байт и кодируем в base64 URL-вариант (без паддинга)
-	// Это даст строку из 8 символов (base64 использует 64 символа, что похоже на требуемый вид)
+	// Генерируем 6 случайных байт для 8 символов в base64
 	b := make([]byte, 6)
 	_, err := rand.Read(b)
 	if err != nil {
-		// В случае ошибки (маловероятно) возвращаем просто инкрементный ID как строку
-		idCounter++
-		return fmt.Sprintf("%d", idCounter)
+		// Fallback: используем временную метку или другой метод
+		return fmt.Sprintf("%x", b)
 	}
-	// URLEncoding без паддинга, чтобы не было символа '='
-	return base64.URLEncoding.EncodeToString(b)
+	// URLEncoding без паддинга, чтобы избежать символа '='
+	return base64.URLEncoding.EncodeToString(b)[:8]
 }
 
 func main() {
 	fmt.Println("Starting shortener server on :8080")
 
+	urlStore := NewURLStore()
+
+	// Обработчик корневого пути
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// POST /
+		log.Printf("Received %s request to %s", r.Method, r.URL.Path)
+
+		// POST запрос для сокращения URL
 		if r.Method == http.MethodPost && r.URL.Path == "/" {
-			// Читаем тело запроса
 			body, err := io.ReadAll(r.Body)
-			if err != nil || len(body) == 0 {
-				http.Error(w, "Bad request: empty body", http.StatusBadRequest)
+			if err != nil {
+				log.Printf("Error reading body: %v", err)
+				http.Error(w, "Bad Request", http.StatusBadRequest)
 				return
 			}
-			originalURL := string(body)
 
-			// Генерируем короткий идентификатор
-			shortID := generateShortID()
+			originalURL := strings.TrimSpace(string(body))
+			if originalURL == "" {
+				log.Printf("Empty URL received")
+				http.Error(w, "Bad Request", http.StatusBadRequest)
+				return
+			}
 
-			// Сохраняем в хранилище (с защитой от гонок)
-			urlStoreMu.Lock()
-			urlStore[shortID] = originalURL
-			urlStoreMu.Unlock()
-
-			// Формируем сокращенный URL
+			log.Printf("Shortening URL: %s", originalURL)
+			shortID := urlStore.Save(originalURL)
 			shortURL := fmt.Sprintf("http://localhost:8080/%s", shortID)
 
-			// Устанавливаем заголовки и отправляем ответ
+			log.Printf("Created short URL: %s -> %s", shortID, originalURL)
+
 			w.Header().Set("Content-Type", "text/plain")
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(shortURL))
 			return
 		}
 
-		// GET /{id}
+		// GET запрос для получения оригинального URL по ID
 		if r.Method == http.MethodGet && len(r.URL.Path) > 1 {
 			shortID := strings.TrimPrefix(r.URL.Path, "/")
 
-			// Ищем оригинальный URL
-			urlStoreMu.RLock()
-			originalURL, exists := urlStore[shortID]
-			urlStoreMu.RUnlock()
+			log.Printf("Looking up ID: %s", shortID)
+			originalURL, exists := urlStore.Get(shortID)
 
 			if !exists {
-				http.Error(w, "Bad request: ID not found", http.StatusBadRequest)
+				log.Printf("ID not found: %s", shortID)
+				http.Error(w, "Bad Request", http.StatusBadRequest)
 				return
 			}
 
-			// Возвращаем редирект
+			log.Printf("Redirecting %s -> %s", shortID, originalURL)
 			w.Header().Set("Location", originalURL)
 			w.WriteHeader(http.StatusTemporaryRedirect)
 			return
 		}
 
-		// Все остальные случаи — 400
-		http.Error(w, "Bad request", http.StatusBadRequest)
+		// Все остальные запросы - 400
+		log.Printf("Invalid request: %s %s", r.Method, r.URL.Path)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
 	})
 
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Println("Server is ready. Listening on :8080...")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Fatalf("Server failed: %v", err)
+	}
 }
