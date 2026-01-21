@@ -1,123 +1,67 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/base64"
-	"fmt"
-	"io"
+	"context"
 	"log"
 	"net/http"
-	"strings"
-	"sync"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/eugegm01-dev/shortener/internal/config"
+	"github.com/eugegm01-dev/shortener/internal/handler"
+	"github.com/eugegm01-dev/shortener/internal/storage"
 )
 
-// Хранилище URL с защитой мьютексом
-type URLStore struct {
-	store map[string]string
-	mu    sync.RWMutex
-}
-
-func NewURLStore() *URLStore {
-	return &URLStore{
-		store: make(map[string]string),
-	}
-}
-
-func (s *URLStore) Save(url string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	shortID := generateShortID()
-	s.store[shortID] = url
-	return shortID
-}
-
-func (s *URLStore) Get(shortID string) (string, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	url, exists := s.store[shortID]
-	return url, exists
-}
-
-// Генерация случайного короткого ID
-func generateShortID() string {
-	b := make([]byte, 6)
-	_, err := rand.Read(b)
-	if err != nil {
-		return fmt.Sprintf("%x", b)
-	}
-	return base64.URLEncoding.EncodeToString(b)[:8]
-}
-
-// Обработчик HTTP-запросов
-type handler struct {
-	store *URLStore
-}
-
-func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log.Printf("Received %s request to %s", r.Method, r.URL.Path)
-
-	// POST запрос для сокращения URL
-	if r.Method == http.MethodPost && r.URL.Path == "/" {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			log.Printf("Error reading body: %v", err)
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-			return
-		}
-
-		originalURL := strings.TrimSpace(string(body))
-		if originalURL == "" {
-			log.Printf("Empty URL received")
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-			return
-		}
-
-		log.Printf("Shortening URL: %s", originalURL)
-		shortID := h.store.Save(originalURL)
-		shortURL := fmt.Sprintf("http://localhost:8080/%s", shortID)
-
-		log.Printf("Created short URL: %s -> %s", shortID, originalURL)
-
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte(shortURL))
-		return
-	}
-
-	// GET запрос для получения оригинального URL по ID
-	if r.Method == http.MethodGet && len(r.URL.Path) > 1 {
-		shortID := strings.TrimPrefix(r.URL.Path, "/")
-
-		log.Printf("Looking up ID: %s", shortID)
-		originalURL, exists := h.store.Get(shortID)
-
-		if !exists {
-			log.Printf("ID not found: %s", shortID)
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-			return
-		}
-
-		log.Printf("Redirecting %s -> %s", shortID, originalURL)
-		w.Header().Set("Location", originalURL)
-		w.WriteHeader(http.StatusTemporaryRedirect)
-		return
-	}
-
-	// Все остальные запросы - 400
-	log.Printf("Invalid request: %s %s", r.Method, r.URL.Path)
-	http.Error(w, "Bad Request", http.StatusBadRequest)
-}
-
 func main() {
-	fmt.Println("Starting shortener server on :8080")
+	// Загрузка конфигурации
+	cfg := config.LoadConfig()
 
-	store := NewURLStore()
-	h := &handler{store: store}
+	// Инициализация хранилища
+	store := storage.NewMemoryStorage()
+	defer store.Close()
 
-	http.Handle("/", h)
+	// Инициализация обработчиков
+	h := handler.New(store, cfg)
 
-	log.Println("Server is ready. Listening on :8080...")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	// Настройка маршрутов
+	router := chi.NewRouter()
+	h.RegisterRoutes(router)
+
+	// Настройка HTTP сервера
+	srv := &http.Server{
+		Addr:    cfg.ServerAddr,
+		Handler: router,
 	}
+
+	// Канал для graceful shutdown
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	// Запуск сервера в отдельной горутине
+	go func() {
+		log.Printf("Starting server on %s", cfg.ServerAddr)
+		log.Printf("Base URL: %s", cfg.BaseURL)
+
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+
+	// Ожидание сигнала остановки
+	<-stop
+	log.Println("Shutting down server...")
+
+	// Graceful shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server shutdown error: %v", err)
+	}
+
+	log.Println("Server stopped gracefully")
 }
