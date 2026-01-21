@@ -9,10 +9,19 @@ on:
 jobs:
   statictest:
     runs-on: ubuntu-latest
-    container: golang:1.24
+   # container: golang:1.24
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
+
+        - name: Setup Go
+  uses: actions/setup-go@v6 # Используйте последнюю версию (v6)
+  with:
+    go-version-file: go.mod # Автоматически прочитает версию из вашего go.mod
+    cache: true # Включите кеширование для ускорения сборок
+
+
+
 
       - name: Download statictest binary
         uses: robinraju/release-downloader@v1.8
