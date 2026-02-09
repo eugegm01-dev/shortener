@@ -7,11 +7,12 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	chiMiddleware "github.com/go-chi/chi/v5/middleware" // Переименовано
 
 	"github.com/eugegm01-dev/shortener/internal/config"
 	"github.com/eugegm01-dev/shortener/internal/models"
 	"github.com/eugegm01-dev/shortener/internal/storage"
+	logMiddleware "github.com/eugegm01-dev/shortener/pkg/middleware" // Переименовано
 )
 
 // Handler обработчик HTTP запросов
@@ -31,9 +32,9 @@ func New(storage storage.Storage, cfg *config.Config) *Handler {
 // RegisterRoutes регистрирует маршруты
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	// Middleware
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.Compress(5))
+	r.Use(logMiddleware.LoggerMiddleware) // Используем переименованный импорт
+	r.Use(chiMiddleware.Recoverer)
+	r.Use(chiMiddleware.Compress(5))
 
 	// Routes
 	r.Get("/ping", h.Ping)

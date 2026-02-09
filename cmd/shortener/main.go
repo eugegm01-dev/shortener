@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,9 +13,13 @@ import (
 	"github.com/eugegm01-dev/shortener/internal/config"
 	"github.com/eugegm01-dev/shortener/internal/handler"
 	"github.com/eugegm01-dev/shortener/internal/storage"
+	"github.com/eugegm01-dev/shortener/pkg/logger"
 )
 
 func main() {
+	// Инициализация логгера
+	logger.Init()
+
 	// Загрузка конфигурации
 	cfg := config.LoadConfig()
 
@@ -43,25 +46,25 @@ func main() {
 
 	// Запуск сервера в отдельной горутине
 	go func() {
-		log.Printf("Starting server on %s", cfg.ServerAddr)
-		log.Printf("Base URL: %s", cfg.BaseURL)
+		logger.Logger.Info().Msgf("Starting server on %s", cfg.ServerAddr)
+		logger.Logger.Info().Msgf("Base URL: %s", cfg.BaseURL)
 
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
+			logger.Logger.Fatal().Err(err).Msg("Server error")
 		}
 	}()
 
 	// Ожидание сигнала остановки
 	<-stop
-	log.Println("Shutting down server...")
+	logger.Logger.Info().Msg("Shutting down server...")
 
 	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server shutdown error: %v", err)
+		logger.Logger.Fatal().Err(err).Msg("Server shutdown error")
 	}
 
-	log.Println("Server stopped gracefully")
+	logger.Logger.Info().Msg("Server stopped gracefully")
 }
