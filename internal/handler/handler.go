@@ -6,13 +6,12 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-	chiMiddleware "github.com/go-chi/chi/v5/middleware" // Переименовано
-
 	"github.com/eugegm01-dev/shortener/internal/config"
 	"github.com/eugegm01-dev/shortener/internal/models"
 	"github.com/eugegm01-dev/shortener/internal/storage"
-	logMiddleware "github.com/eugegm01-dev/shortener/pkg/middleware" // Переименовано
+	mw "github.com/eugegm01-dev/shortener/pkg/middleware"
+	"github.com/go-chi/chi/v5"
+	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 )
 
 // Handler обработчик HTTP запросов
@@ -31,10 +30,13 @@ func New(storage storage.Storage, cfg *config.Config) *Handler {
 
 // RegisterRoutes регистрирует маршруты
 func (h *Handler) RegisterRoutes(r chi.Router) {
-	// Middleware
-	r.Use(logMiddleware.LoggerMiddleware) // Используем переименованный импорт
+	// Decompress gzipped requests FIRST
+	r.Use(mw.DecompressMiddleware)
+
+	// Then your logger and other middleware
+	r.Use(mw.LoggerMiddleware) // your custom logger
 	r.Use(chiMiddleware.Recoverer)
-	r.Use(chiMiddleware.Compress(5))
+	r.Use(chiMiddleware.Compress(5)) // response compression
 
 	// Routes
 	r.Get("/ping", h.Ping)
