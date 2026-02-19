@@ -17,34 +17,43 @@ import (
 )
 
 func main() {
-	// Инициализация логгера
+	// Initialize logger
 	logger.Init()
 
-	// Загрузка конфигурации
+	// Load configuration
 	cfg := config.LoadConfig()
 
-	// Инициализация хранилища
-	store := storage.NewMemoryStorage()
+	// Initialize storage based on config
+	var store storage.Storage
+	if cfg.FileStoragePath != "" {
+		fileStore, err := storage.NewFileStorage(cfg.FileStoragePath)
+		if err != nil {
+			logger.Logger.Fatal().Err(err).Msg("Failed to create file storage")
+		}
+		store = fileStore
+	} else {
+		store = storage.NewMemoryStorage()
+	}
 	defer store.Close()
 
-	// Инициализация обработчиков
+	// Initialize handlers
 	h := handler.New(store, cfg)
 
-	// Настройка маршрутов
+	// Setup router
 	router := chi.NewRouter()
 	h.RegisterRoutes(router)
 
-	// Настройка HTTP сервера
+	// Configure HTTP server
 	srv := &http.Server{
 		Addr:    cfg.ServerAddr,
 		Handler: router,
 	}
 
-	// Канал для graceful shutdown
+	// Graceful shutdown channel
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
-	// Запуск сервера в отдельной горутине
+	// Run server in goroutine
 	go func() {
 		logger.Logger.Info().Msgf("Starting server on %s", cfg.ServerAddr)
 		logger.Logger.Info().Msgf("Base URL: %s", cfg.BaseURL)
@@ -54,7 +63,7 @@ func main() {
 		}
 	}()
 
-	// Ожидание сигнала остановки
+	// Wait for stop signal
 	<-stop
 	logger.Logger.Info().Msg("Shutting down server...")
 
