@@ -9,21 +9,18 @@ import (
 	"github.com/eugegm01-dev/shortener/internal/models"
 )
 
-// fileRecord represents a single record in the JSON file.
 type fileRecord struct {
 	UUID        string `json:"uuid"`
 	ShortURL    string `json:"short_url"`
 	OriginalURL string `json:"original_url"`
 }
 
-// FileStorage implements Storage with persistence to a JSON file.
 type FileStorage struct {
 	mu       sync.RWMutex
-	store    map[string]string // short URL -> original URL
+	store    map[string]string
 	filePath string
 }
 
-// NewFileStorage creates a new FileStorage and loads existing data from the file.
 func NewFileStorage(filePath string) (*FileStorage, error) {
 	fs := &FileStorage{
 		store:    make(map[string]string),
@@ -35,12 +32,12 @@ func NewFileStorage(filePath string) (*FileStorage, error) {
 	return fs, nil
 }
 
-// load reads the JSON file and populates the store.
+// load загружает данные из файла (вызывается один раз при инициализации).
 func (fs *FileStorage) load() error {
 	file, err := os.Open(fs.filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // file doesn't exist, start empty
+			return nil // файла нет — начинаем с пустого хранилища
 		}
 		return err
 	}
@@ -59,28 +56,22 @@ func (fs *FileStorage) load() error {
 	return nil
 }
 
-// save writes the current store to the JSON file.
+// save записывает текущее состояние store в файл.
+// Вызывается только при уже захваченном мьютексе на запись (из Save).
 func (fs *FileStorage) save() error {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-
-	// Convert store to slice of fileRecord
+	// преобразуем store в срез fileRecord
 	records := make([]fileRecord, 0, len(fs.store))
-	i := 1
 	for shortURL, originalURL := range fs.store {
 		records = append(records, fileRecord{
-			UUID:        "", // we don't store UUID, assign sequential for output
 			ShortURL:    shortURL,
 			OriginalURL: originalURL,
 		})
-		i++
 	}
-	// Assign sequential UUIDs (1,2,3...)
-	for j := range records {
-		records[j].UUID = itoa(j + 1) // simple conversion, but we need a function
+	// добавляем UUID (порядковый номер) для красивого вывода
+	for i := range records {
+		records[i].UUID = itoa(i + 1)
 	}
 
-	// Write to file (create or truncate)
 	file, err := os.Create(fs.filePath)
 	if err != nil {
 		return err
@@ -88,11 +79,11 @@ func (fs *FileStorage) save() error {
 	defer file.Close()
 
 	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ") // pretty print like example
+	encoder.SetIndent("", "  ")
 	return encoder.Encode(records)
 }
 
-// Simple int to string converter (instead of strconv.Itoa to avoid extra import)
+// itoa — простейшее преобразование int в string (без импорта strconv).
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
@@ -107,7 +98,6 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
-// Save stores a URL and returns its short ID. Writes to file.
 func (fs *FileStorage) Save(url string) (string, error) {
 	if url == "" {
 		return "", errEmptyURL
@@ -116,28 +106,22 @@ func (fs *FileStorage) Save(url string) (string, error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
-	// Generate a unique ID
 	id := generateShortID()
 	for {
 		if _, exists := fs.store[id]; !exists {
 			break
 		}
-		id = generateShortID() // collision, try again
+		id = generateShortID()
 	}
 	fs.store[id] = url
 
-	// Persist to file
 	if err := fs.save(); err != nil {
-		// If save fails, we should probably rollback? For simplicity, we just return error.
-		// In a real app, you might want to remove the entry from memory.
 		delete(fs.store, id)
 		return "", err
 	}
-
 	return id, nil
 }
 
-// Get returns the original URL for a given short ID.
 func (fs *FileStorage) Get(id string) (string, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
@@ -149,32 +133,25 @@ func (fs *FileStorage) Get(id string) (string, error) {
 	return url, nil
 }
 
-// GetAll returns all stored URLs.
 func (fs *FileStorage) GetAll() ([]models.URL, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
 	urls := make([]models.URL, 0, len(fs.store))
 	for id, url := range fs.store {
-		urls = append(urls, models.URL{
-			ID:  id,
-			URL: url,
-		})
+		urls = append(urls, models.URL{ID: id, URL: url})
 	}
 	return urls, nil
 }
 
-// Ping always returns nil (file storage is considered always available).
 func (fs *FileStorage) Ping() error {
 	return nil
 }
 
-// Close performs any necessary cleanup. For file storage, nothing is needed.
 func (fs *FileStorage) Close() error {
 	return nil
 }
 
-// Define errors used in storage (could be placed in a common place)
 var (
 	errEmptyURL = fmt.Errorf("url cannot be empty")
 	errNotFound = fmt.Errorf("url not found")
