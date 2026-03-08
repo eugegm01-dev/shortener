@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/eugegm01-dev/shortener/internal/models"
 	"github.com/eugegm01-dev/shortener/pkg/logger"
@@ -22,12 +21,7 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Wait for the database to become ready
-	if err := waitForDB(db, 30*time.Second); err != nil {
-		return nil, fmt.Errorf("database not ready: %w", err)
-	}
-
-	// Create table if not exists (best effort)
+	// attempt to create table, but only log error – do not block startup
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS urls (
 			id VARCHAR(255) PRIMARY KEY,
@@ -35,26 +29,11 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 		);
 	`
 	if _, err := db.Exec(createTableSQL); err != nil {
-		// Log but continue – table might already exist or we have limited permissions
+		// log but continue – table may exist or DB is down; Ping will handle later
 		logger.Logger.Error().Err(err).Msg("Failed to create urls table, continuing")
 	}
 
 	return &PostgresStorage{db: db}, nil
-}
-
-// waitForDB pings the database repeatedly until it succeeds or the timeout expires.
-func waitForDB(db *sql.DB, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		if err := db.Ping(); err == nil {
-			return nil
-		} else {
-			lastErr = err
-		}
-		time.Sleep(1 * time.Second)
-	}
-	return fmt.Errorf("ping timeout after %v: %w", timeout, lastErr)
 }
 
 func (p *PostgresStorage) Save(url string) (string, error) {
