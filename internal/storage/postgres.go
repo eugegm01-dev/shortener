@@ -1,12 +1,16 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/eugegm01-dev/shortener/internal/models"
 	"github.com/eugegm01-dev/shortener/pkg/logger"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -16,12 +20,43 @@ type PostgresStorage struct {
 }
 
 func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
+	// Try to open connection with original DSN
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// attempt to create table, but only log error – do not block startup
+	// Attempt to ping with a timeout
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err = db.PingContext(pingCtx)
+	cancel()
+
+	// If ping fails due to hostname resolution, try with localhost
+	if err != nil && strings.Contains(err.Error(), "hostname resolving error") {
+		// Parse the original DSN
+		config, parseErr := pgx.ParseConfig(dsn)
+		if parseErr == nil && config.Host == "postgres" {
+			logger.Logger.Info().Msg("Original host 'postgres' not resolvable, trying 'localhost'")
+			config.Host = "localhost"
+			newDSN := config.ConnString()
+			db.Close()
+			db, err = sql.Open("pgx", newDSN)
+			if err != nil {
+				return nil, fmt.Errorf("failed to open database with fallback localhost: %w", err)
+			}
+			// Ping again
+			pingCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+			err = db.PingContext(pingCtx)
+			cancel()
+		}
+	}
+
+	// If still failing, return error (server will not start)
+	if err != nil {
+		return nil, fmt.Errorf("database not reachable: %w", err)
+	}
+
+	// Create table if not exists (best effort)
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS urls (
 			id VARCHAR(255) PRIMARY KEY,
@@ -29,7 +64,6 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 		);
 	`
 	if _, err := db.Exec(createTableSQL); err != nil {
-		// log but continue – table may exist or DB is down; Ping will handle later
 		logger.Logger.Error().Err(err).Msg("Failed to create urls table, continuing")
 	}
 
