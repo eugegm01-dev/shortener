@@ -9,6 +9,7 @@ import (
 	"github.com/eugegm01-dev/shortener/internal/config"
 	"github.com/eugegm01-dev/shortener/internal/models"
 	"github.com/eugegm01-dev/shortener/internal/storage"
+	"github.com/eugegm01-dev/shortener/pkg/logger"
 	mw "github.com/eugegm01-dev/shortener/pkg/middleware"
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
@@ -48,6 +49,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 // Ping проверяет доступность сервиса
 func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	if err := h.storage.Ping(); err != nil {
+		// Log the actual error for debugging
+		logger.Logger.Error().Err(err).Msg("Ping failed")
 		h.sendJSONError(w, "Storage unavailable", http.StatusInternalServerError)
 		return
 	}
