@@ -23,45 +23,8 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Retry connection with exponential backoff (critical for CI environments)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	var lastErr error
-	for attempt := 1; attempt <= 15; attempt++ {
-		if err = db.PingContext(ctx); err == nil {
-			logger.Logger.Info().Msg("Successfully connected to PostgreSQL")
-			break
-		}
-		lastErr = err
-		logger.Logger.Warn().Err(err).Int("attempt", attempt).Msg("Waiting for PostgreSQL...")
-
-		// Exponential backoff: 1s, 2s, 3s, ... up to ~15s total
-		select {
-		case <-time.After(time.Duration(attempt) * time.Second):
-			// continue to next attempt
-		case <-ctx.Done():
-			db.Close()
-			return nil, fmt.Errorf("timeout waiting for database: %w", ctx.Err())
-		}
-	}
-
-	if lastErr != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to connect to database after retries: %w", lastErr)
-	}
-
-	// Create table (non-blocking - errors logged but don't fail startup)
-	createTableSQL := `
-	CREATE TABLE IF NOT EXISTS urls (
-		id VARCHAR(255) PRIMARY KEY,
-		original_url TEXT NOT NULL
-	);
-	`
-	if _, err := db.Exec(createTableSQL); err != nil {
-		logger.Logger.Error().Err(err).Msg("Failed to create urls table, continuing")
-	}
-
+	// Don't block here - let server start immediately
+	// Connection verification happens lazily in Ping()
 	return &PostgresStorage{db: db}, nil
 }
 
@@ -69,6 +32,10 @@ func (p *PostgresStorage) Save(url string) (string, error) {
 	if url == "" {
 		return "", errEmptyURL
 	}
+
+	// Ensure table exists (non-blocking)
+	p.ensureTable()
+
 	for i := 0; i < 5; i++ {
 		id := generateShortID()
 		_, err := p.db.Exec("INSERT INTO urls (id, original_url) VALUES ($1, $2)", id, url)
@@ -118,9 +85,35 @@ func (p *PostgresStorage) GetAll() ([]models.URL, error) {
 }
 
 func (p *PostgresStorage) Ping() error {
-	return p.db.Ping()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var lastErr error
+	for attempt := 1; attempt <= 20; attempt++ {
+		err := p.db.PingContext(ctx)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("ping failed after retries: %w", lastErr)
 }
 
 func (p *PostgresStorage) Close() error {
 	return p.db.Close()
+}
+
+// ensureTable creates the urls table if it doesn't exist (non-blocking)
+func (p *PostgresStorage) ensureTable() {
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS urls (
+		id VARCHAR(255) PRIMARY KEY,
+		original_url TEXT NOT NULL
+	);
+	`
+	if _, err := p.db.Exec(createTableSQL); err != nil {
+		// Log but don't fail - table may already exist or DB is temporarily unavailable
+		logger.Logger.Debug().Err(err).Msg("Failed to ensure urls table")
+	}
 }
