@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/eugegm01-dev/shortener/internal/models"
@@ -19,17 +18,45 @@ type PostgresStorage struct {
 }
 
 func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
-	db, err := tryConnect(dsn, 3, 5*time.Second)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("database not reachable: %w", err)
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Create table if not exists (best effort)
+	// Retry connection with exponential backoff (critical for CI environments)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var lastErr error
+	for attempt := 1; attempt <= 15; attempt++ {
+		if err = db.PingContext(ctx); err == nil {
+			logger.Logger.Info().Msg("Successfully connected to PostgreSQL")
+			break
+		}
+		lastErr = err
+		logger.Logger.Warn().Err(err).Int("attempt", attempt).Msg("Waiting for PostgreSQL...")
+
+		// Exponential backoff: 1s, 2s, 3s, ... up to ~15s total
+		select {
+		case <-time.After(time.Duration(attempt) * time.Second):
+			// continue to next attempt
+		case <-ctx.Done():
+			db.Close()
+			return nil, fmt.Errorf("timeout waiting for database: %w", ctx.Err())
+		}
+	}
+
+	if lastErr != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to connect to database after retries: %w", lastErr)
+	}
+
+	// Create table (non-blocking - errors logged but don't fail startup)
 	createTableSQL := `
-		CREATE TABLE IF NOT EXISTS urls (
-			id VARCHAR(255) PRIMARY KEY,
-			original_url TEXT NOT NULL
-		);
+	CREATE TABLE IF NOT EXISTS urls (
+		id VARCHAR(255) PRIMARY KEY,
+		original_url TEXT NOT NULL
+	);
 	`
 	if _, err := db.Exec(createTableSQL); err != nil {
 		logger.Logger.Error().Err(err).Msg("Failed to create urls table, continuing")
@@ -38,68 +65,19 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 	return &PostgresStorage{db: db}, nil
 }
 
-// tryConnect attempts to connect with retries and fallback to localhost if host is postgres.
-func tryConnect(dsn string, retries int, timeout time.Duration) (*sql.DB, error) {
-	var lastErr error
-	for i := 0; i < retries; i++ {
-		// Try original DSN
-		db, err := sql.Open("pgx", dsn)
-		if err != nil {
-			lastErr = err
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		err = db.PingContext(ctx)
-		cancel()
-
-		if err == nil {
-			return db, nil
-		}
-		db.Close()
-		lastErr = err
-
-		// If error is hostname resolution and DSN uses "postgres", try localhost
-		if strings.Contains(err.Error(), "hostname resolving error") && strings.Contains(dsn, "@postgres:") {
-			newDSN := strings.Replace(dsn, "@postgres:", "@localhost:", 1)
-			logger.Logger.Info().Msgf("Trying fallback DSN: %s", newDSN)
-			db, err = sql.Open("pgx", newDSN)
-			if err != nil {
-				lastErr = err
-				time.Sleep(1 * time.Second)
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
-			err = db.PingContext(ctx)
-			cancel()
-			if err == nil {
-				return db, nil
-			}
-			db.Close()
-			lastErr = err
-		}
-
-		time.Sleep(1 * time.Second)
-	}
-	return nil, lastErr
-}
-
 func (p *PostgresStorage) Save(url string) (string, error) {
 	if url == "" {
 		return "", errEmptyURL
 	}
-
 	for i := 0; i < 5; i++ {
 		id := generateShortID()
 		_, err := p.db.Exec("INSERT INTO urls (id, original_url) VALUES ($1, $2)", id, url)
 		if err == nil {
 			return id, nil
 		}
-
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			continue
+			continue // collision, retry
 		}
 		return "", err
 	}
