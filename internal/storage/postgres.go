@@ -6,8 +6,9 @@ import (
 	"fmt"
 
 	"github.com/eugegm01-dev/shortener/internal/models"
-	"github.com/jackc/pgx/v5/pgconn"   // for error code checking
-	_ "github.com/jackc/pgx/v5/stdlib" // register pgx driver
+	"github.com/eugegm01-dev/shortener/pkg/logger" // added import
+	"github.com/jackc/pgx/v5/pgconn"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type PostgresStorage struct {
@@ -19,11 +20,8 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
-	if err = db.Ping(); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %w", err)
-	}
 
-	// create table if not exists
+	// attempt to create table, but only log error – do not block startup
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS urls (
 			id VARCHAR(255) PRIMARY KEY,
@@ -31,7 +29,8 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 		);
 	`
 	if _, err := db.Exec(createTableSQL); err != nil {
-		return nil, fmt.Errorf("failed to create table: %w", err)
+		// log but continue – table may exist or DB is down; Ping will handle later
+		logger.Logger.Error().Err(err).Msg("Failed to create urls table, continuing")
 	}
 
 	return &PostgresStorage{db: db}, nil
@@ -42,7 +41,6 @@ func (p *PostgresStorage) Save(url string) (string, error) {
 		return "", errEmptyURL
 	}
 
-	// try up to 5 times in case of ID collision
 	for i := 0; i < 5; i++ {
 		id := generateShortID()
 		_, err := p.db.Exec("INSERT INTO urls (id, original_url) VALUES ($1, $2)", id, url)
@@ -50,12 +48,11 @@ func (p *PostgresStorage) Save(url string) (string, error) {
 			return id, nil
 		}
 
-		// check for duplicate key violation (PostgreSQL error code 23505)
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			continue // try another ID
+			continue
 		}
-		return "", err // other error
+		return "", err
 	}
 	return "", fmt.Errorf("failed to save after multiple attempts")
 }
