@@ -10,7 +10,6 @@ import (
 
 	"github.com/eugegm01-dev/shortener/internal/models"
 	"github.com/eugegm01-dev/shortener/pkg/logger"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -20,38 +19,7 @@ type PostgresStorage struct {
 }
 
 func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
-	// Try to open connection with original DSN
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
-	}
-
-	// Attempt to ping with a timeout
-	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	err = db.PingContext(pingCtx)
-	cancel()
-
-	// If ping fails due to hostname resolution, try with localhost
-	if err != nil && strings.Contains(err.Error(), "hostname resolving error") {
-		// Parse the original DSN
-		config, parseErr := pgx.ParseConfig(dsn)
-		if parseErr == nil && config.Host == "postgres" {
-			logger.Logger.Info().Msg("Original host 'postgres' not resolvable, trying 'localhost'")
-			config.Host = "localhost"
-			newDSN := config.ConnString()
-			db.Close()
-			db, err = sql.Open("pgx", newDSN)
-			if err != nil {
-				return nil, fmt.Errorf("failed to open database with fallback localhost: %w", err)
-			}
-			// Ping again
-			pingCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-			err = db.PingContext(pingCtx)
-			cancel()
-		}
-	}
-
-	// If still failing, return error (server will not start)
+	db, err := tryConnect(dsn, 3, 5*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("database not reachable: %w", err)
 	}
@@ -68,6 +36,53 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 	}
 
 	return &PostgresStorage{db: db}, nil
+}
+
+// tryConnect attempts to connect with retries and fallback to localhost if host is postgres.
+func tryConnect(dsn string, retries int, timeout time.Duration) (*sql.DB, error) {
+	var lastErr error
+	for i := 0; i < retries; i++ {
+		// Try original DSN
+		db, err := sql.Open("pgx", dsn)
+		if err != nil {
+			lastErr = err
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		err = db.PingContext(ctx)
+		cancel()
+
+		if err == nil {
+			return db, nil
+		}
+		db.Close()
+		lastErr = err
+
+		// If error is hostname resolution and DSN uses "postgres", try localhost
+		if strings.Contains(err.Error(), "hostname resolving error") && strings.Contains(dsn, "@postgres:") {
+			newDSN := strings.Replace(dsn, "@postgres:", "@localhost:", 1)
+			logger.Logger.Info().Msgf("Trying fallback DSN: %s", newDSN)
+			db, err = sql.Open("pgx", newDSN)
+			if err != nil {
+				lastErr = err
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			err = db.PingContext(ctx)
+			cancel()
+			if err == nil {
+				return db, nil
+			}
+			db.Close()
+			lastErr = err
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+	return nil, lastErr
 }
 
 func (p *PostgresStorage) Save(url string) (string, error) {
