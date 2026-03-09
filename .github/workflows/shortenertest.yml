@@ -7,24 +7,23 @@ on:
       - main
 
 jobs:
+
   branchtest:
     runs-on: ubuntu-latest
+
     steps:
       - name: Check branch name
         run: |
-          if [[ ! $GITHUB_HEAD_REF =~ ^iter[0-9]+$ ]] && [[ ${{ github.ref }} != "refs/heads/main" ]]; then
-            echo "Branch name must match pattern 'iter<number>' or github.ref must be 'refs/heads/main'"
-            echo "Your branch is $GITHUB_HEAD_REF and github.ref is ${{ github.ref }}"
-            exit 1
-          else
-            echo "Your branch is $GITHUB_HEAD_REF and github.ref is ${{ github.ref }}"
-          fi
+          if [[ ! $GITHUB_HEAD_REF =~ ^iter[0-9]+$ ]] && [[ ${{ github.ref }} != "refs/heads/main" ]]; then echo "Branch name must match pattern 'iter<number>' or github.ref must be 'refs/heads/main'" && echo "Your branch is $GITHUB_HEAD_REF and github.ref is ${{ github.ref }}" && exit 1; else echo "Your branch is $GITHUB_HEAD_REF and github.ref is ${{ github.ref }}"; fi
 
   shortenertest:
     runs-on: ubuntu-latest
+    container: golang:1.24
     needs: branchtest
+
     env:
       DATABASE_CONN_STRING: "postgres://postgres:postgres@postgres:5432/praktikum?sslmode=disable"
+
     services:
       postgres:
         image: postgres
@@ -36,15 +35,10 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 5
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+        uses: actions/checkout@v2
 
       - name: Download autotests binaries
         uses: robinraju/release-downloader@v1.8
@@ -101,7 +95,7 @@ jobs:
         run: |
           shortenertest -test.v -test.run=^TestIteration1$ \
               -binary-path=cmd/shortener/shortener
-      
+
       - name: "Code increment #2"
         if: |
           github.ref == 'refs/heads/main' ||
@@ -241,7 +235,8 @@ jobs:
           github.head_ref == 'iter23' ||
           github.head_ref == 'iter24'
         run: |
-          shortenertest -test.v -test.run=^TestIteration6$ -source-path=.
+          shortenertest -test.v -test.run=^TestIteration6$ \
+              -source-path=.
 
       - name: "Code increment #7"
         if: |
@@ -462,7 +457,8 @@ jobs:
           github.head_ref == 'iter23' ||
           github.head_ref == 'iter24'
         run: |
-          shortenertest -test.v -test.run=^TestIteration16$ -source-path=.
+          shortenertest -test.v -test.run=^TestIteration16$ \
+              -source-path=. \
 
       - name: "Code increment #17"
         if: |
@@ -476,7 +472,8 @@ jobs:
           github.head_ref == 'iter23' ||
           github.head_ref == 'iter24'
         run: |
-          shortenertest -test.v -test.run=^TestIteration17$ -source-path=.
+          shortenertest -test.v -test.run=^TestIteration17$ \
+              -source-path=. \
 
       - name: "Code increment #18"
         if: |
@@ -489,4 +486,5 @@ jobs:
           github.head_ref == 'iter23' ||
           github.head_ref == 'iter24'
         run: |
-          shortenertest -test.v -test.run=^TestIteration18$ -source-path=.
+          shortenertest -test.v -test.run=^TestIteration18$ \
+              -source-path=. \
