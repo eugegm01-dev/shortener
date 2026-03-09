@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/eugegm01-dev/shortener/internal/models"
@@ -23,9 +24,27 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Don't block here - let server start immediately
-	// Connection verification happens lazily in Ping()
-	return &PostgresStorage{db: db}, nil
+	ps := &PostgresStorage{db: db}
+	if err := ps.runMigrations(); err != nil {
+		// Логируем ошибку, но не прерываем запуск – таблица может уже существовать
+		logger.Logger.Error().Err(err).Msg("Migration failed, but continuing")
+	}
+	return ps, nil
+}
+
+// runMigrations читает и выполняет SQL-файл миграции
+func (p *PostgresStorage) runMigrations() error {
+	// Путь относительно корня проекта (там, откуда запускается бинарник)
+	migrationFile := "migrations/0001_create_urls_table.up.sql"
+	content, err := os.ReadFile(migrationFile)
+	if err != nil {
+		return fmt.Errorf("failed to read migration file: %w", err)
+	}
+
+	if _, err := p.db.Exec(string(content)); err != nil {
+		return fmt.Errorf("failed to execute migration: %w", err)
+	}
+	return nil
 }
 
 func (p *PostgresStorage) Save(url string) (string, error) {
@@ -33,9 +52,7 @@ func (p *PostgresStorage) Save(url string) (string, error) {
 		return "", errEmptyURL
 	}
 
-	// Ensure table exists (non-blocking)
-	p.ensureTable()
-
+	// Таблица уже должна существовать после миграции, поэтому ensureTable больше не нужен
 	for i := 0; i < 5; i++ {
 		id := generateShortID()
 		_, err := p.db.Exec("INSERT INTO urls (id, original_url) VALUES ($1, $2)", id, url)
@@ -102,18 +119,4 @@ func (p *PostgresStorage) Ping() error {
 
 func (p *PostgresStorage) Close() error {
 	return p.db.Close()
-}
-
-// ensureTable creates the urls table if it doesn't exist (non-blocking)
-func (p *PostgresStorage) ensureTable() {
-	createTableSQL := `
-	CREATE TABLE IF NOT EXISTS urls (
-		id VARCHAR(255) PRIMARY KEY,
-		original_url TEXT NOT NULL
-	);
-	`
-	if _, err := p.db.Exec(createTableSQL); err != nil {
-		// Log but don't fail - table may already exist or DB is temporarily unavailable
-		logger.Logger.Debug().Err(err).Msg("Failed to ensure urls table")
-	}
 }
