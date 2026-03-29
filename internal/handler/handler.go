@@ -169,7 +169,7 @@ func (h *Handler) ShortenURLBatch(w http.ResponseWriter, r *http.Request) {
 
     // Пустой батч — возвращаем пустой ответ
     if len(req) == 0 {
-        w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusOK)         // ← 200 OK
 w.WriteHeader(http.StatusCreated)
 
         json.NewEncoder(w).Encode([]models.BatchShortenResponse{})
@@ -203,6 +203,6 @@ w.WriteHeader(http.StatusCreated)
     }
 
     w.Header().Set("Content-Type", "application/json")
-    w.WriteHeader(http.StatusAccepted) // 202 — принято на обработку
+w.WriteHeader(http.StatusCreated)       // ← 201 Created
     json.NewEncoder(w).Encode(resp)
 }
