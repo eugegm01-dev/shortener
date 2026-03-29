@@ -1,16 +1,16 @@
 package storage
 
 import (
-    "context"
-    "database/sql"
-    "errors"
-    "fmt"
-    "os"
-    "time"
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"time"
 
-    "github.com/eugegm01-dev/shortener/internal/models"
-    "github.com/eugegm01-dev/shortener/pkg/logger"
-    _ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/eugegm01-dev/shortener/internal/models"
+	"github.com/eugegm01-dev/shortener/pkg/logger"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type PostgresStorage struct {
@@ -138,7 +138,8 @@ func (p *PostgresStorage) GetAll() ([]models.URL, error) {
         if err := rows.Scan(&u.ID, &u.URL); err != nil {
             return nil, err
         }
-        urls.append(urls, u)
+urls = append(urls, u)
+
     }
     if err = rows.Err(); err != nil {
         return nil, err
