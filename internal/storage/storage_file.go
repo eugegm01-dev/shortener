@@ -35,16 +35,28 @@ func NewFileStorage(filePath string) (*FileStorage, error) {
 
 // load загружает данные из файла (вызывается один раз при инициализации).
 func (fs *FileStorage) load() error {
-    // ... чтение records ...
+    file, err := os.Open(fs.filePath)
+    if err != nil {
+        if os.IsNotExist(err) {
+            return nil
+        }
+        return err
+    }
+    defer file.Close()
+
+    var records []fileRecord
+    if err := json.NewDecoder(file).Decode(&records); err != nil {
+        return err
+    }
+
     fs.mu.Lock()
     defer fs.mu.Unlock()
     for _, rec := range records {
         fs.store[rec.ShortURL] = rec.OriginalURL
-        fs.urlToID[rec.OriginalURL] = rec.ShortURL   // добавлено
+        fs.urlToID[rec.OriginalURL] = rec.ShortURL
     }
     return nil
 }
-
 // save записывает текущее состояние store в файл.
 // Вызывается только при уже захваченном мьютексе на запись (из Save).
 func (fs *FileStorage) save() error {

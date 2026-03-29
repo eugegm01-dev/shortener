@@ -176,7 +176,6 @@ func (h *Handler) ShortenURLBatch(w http.ResponseWriter, r *http.Request) {
     // Пустой батч — возвращаем пустой ответ
     if len(req) == 0 {
     w.WriteHeader(http.StatusOK)         // ← 200 OK
-w.WriteHeader(http.StatusCreated)
 
         json.NewEncoder(w).Encode([]models.BatchShortenResponse{})
         return
