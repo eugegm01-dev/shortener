@@ -1,24 +1,29 @@
 package handler
 
 import (
-	"bytes"
-	"context"
-	"crypto/rand"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"strings"
+    "bytes"
+    "context"
+    "crypto/rand"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "strings"
 
-	"github.com/eugegm01-dev/shortener/internal/auth"
-	"github.com/eugegm01-dev/shortener/internal/config"
-	"github.com/eugegm01-dev/shortener/internal/models"
-	"github.com/eugegm01-dev/shortener/internal/storage"
-	"github.com/eugegm01-dev/shortener/pkg/logger"
-	mw "github.com/eugegm01-dev/shortener/pkg/middleware"
-	"github.com/go-chi/chi/v5"
-	chiMiddleware "github.com/go-chi/chi/v5/middleware"
+    "github.com/eugegm01-dev/shortener/internal/auth"
+    "github.com/eugegm01-dev/shortener/internal/config"
+    "github.com/eugegm01-dev/shortener/internal/models"
+    "github.com/eugegm01-dev/shortener/internal/storage"
+    "github.com/eugegm01-dev/shortener/pkg/logger"
+    mw "github.com/eugegm01-dev/shortener/pkg/middleware"
+    "github.com/go-chi/chi/v5"
+    chiMiddleware "github.com/go-chi/chi/v5/middleware"
 )
+
+// Определяем тип для ключа контекста
+type contextKey string
+
+const userIDKey contextKey = "userID"
 
 // Handler обработчик HTTP запросов
 type Handler struct {
@@ -67,8 +72,8 @@ func (h *Handler) authMiddleware(next http.Handler) http.Handler {
             }
         }
 
-        // Добавляем userID в контекст
-        ctx := context.WithValue(r.Context(), "userID", userID)
+        // Добавляем userID в контекст с использованием кастомного ключа
+        ctx := context.WithValue(r.Context(), userIDKey, userID)
         next.ServeHTTP(w, r.WithContext(ctx))
     })
 }
@@ -82,7 +87,7 @@ func generateUserID() string {
 
 // getUserIDFromContext извлекает userID из контекста
 func (h *Handler) getUserIDFromContext(r *http.Request) (string, bool) {
-    userID, ok := r.Context().Value("userID").(string)
+    userID, ok := r.Context().Value(userIDKey).(string)
     return userID, ok
 }
 
