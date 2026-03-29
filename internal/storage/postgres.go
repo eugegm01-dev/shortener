@@ -50,24 +50,32 @@ func (p *PostgresStorage) runMigrations() error {
         return nil
     }
 
-    func (p *PostgresStorage) Save(url string) (string, error) {
-
+func (p *PostgresStorage) Save(url string) (string, bool, error) {
     if url == "" {
-        return "", errEmptyURL
+        return "", false, errEmptyURL
     }
-    id := generateShortID()
-    // Пытаемся вставить, при конфликте по unique_original_url – возвращаем существующий id
-    var existingID string
+    newID := generateShortID()
+    var id string
+    // Пытаемся вставить новую запись
     err := p.db.QueryRow(`
         INSERT INTO urls (id, original_url) VALUES ($1, $2)
-        ON CONFLICT (original_url) DO UPDATE SET original_url = EXCLUDED.original_url
+        ON CONFLICT (original_url) DO NOTHING
         RETURNING id
-    `, id, url).Scan(&existingID)
-    if err != nil {
-        return "", err
+    `, newID, url).Scan(&id)
+    if err == sql.ErrNoRows {
+        // Конфликт – URL уже существует, получаем существующий id
+        err = p.db.QueryRow(`SELECT id FROM urls WHERE original_url = $1`, url).Scan(&id)
+        if err != nil {
+            return "", false, err
+        }
+        return id, false, nil
     }
-    return existingID, nil
+    if err != nil {
+        return "", false, err
+    }
+    return id, true, nil
 }
+
 func (p *PostgresStorage) Get(id string) (string, error) {
 	var originalURL string
 	err := p.db.QueryRow("SELECT original_url FROM urls WHERE id = $1", id).Scan(&originalURL)

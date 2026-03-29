@@ -27,7 +27,7 @@ func generateShortID() string {
 
 // Storage определяет интерфейс хранилища URL
 type Storage interface {
-    Save(url string) (string, error)
+    Save(url string) (id string, created bool, err error)
     Get(id string) (string, error)
     GetAll() ([]models.URL, error)
     Ping() error
@@ -52,15 +52,15 @@ func NewMemoryStorage() *MemoryStorage {
 }
 
 // Save сохраняет URL и возвращает его ID
-func (s *MemoryStorage) Save(url string) (string, error) {
+func (s *MemoryStorage) Save(url string) (string, bool, error) {
     if url == "" {
-        return "", errEmptyURL
+        return "", false, errEmptyURL
     }
     s.mu.Lock()
     defer s.mu.Unlock()
     // Если уже есть – возвращаем существующий id
     if id, ok := s.urlToID[url]; ok {
-        return id, nil
+        return id, false, nil
     }
     id := generateShortID()
     for {
@@ -71,7 +71,7 @@ func (s *MemoryStorage) Save(url string) (string, error) {
     }
     s.store[id] = url
     s.urlToID[url] = id
-    return id, nil
+    return id, true, nil
 }
 
 // Get возвращает URL по ID

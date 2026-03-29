@@ -72,17 +72,21 @@ func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := h.storage.Save(originalURL)
-	if err != nil {
-		h.sendPlainError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	id, created, err := h.storage.Save(originalURL)
+        if err != nil {
+            h.sendPlainError(w, err.Error(), http.StatusInternalServerError)
+            return
+        }
+        shortURL := fmt.Sprintf("%s/%s", h.cfg.BaseURL, id)
+        w.Header().Set("Content-Type", "text/plain")
+        if !created {
+            w.WriteHeader(http.StatusConflict)
+        } else {
+            w.WriteHeader(http.StatusCreated)
+        }
+        w.Write([]byte(shortURL))
+    }
 
-	shortURL := fmt.Sprintf("%s/%s", h.cfg.BaseURL, id)
-	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte(shortURL))
-}
 
 // ShortenURLJSON сокращает URL из JSON запроса
 func (h *Handler) ShortenURLJSON(w http.ResponseWriter, r *http.Request) {
@@ -98,20 +102,22 @@ func (h *Handler) ShortenURLJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := h.storage.Save(req.URL)
-	if err != nil {
-		h.sendJSONError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	resp := models.ShortenResponse{
-		Result: fmt.Sprintf("%s/%s", h.cfg.BaseURL, id),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
-}
+	id, created, err := h.storage.Save(req.URL)
+        if err != nil {
+            h.sendJSONError(w, err.Error(), http.StatusInternalServerError)
+            return
+        }
+        resp := models.ShortenResponse{
+            Result: fmt.Sprintf("%s/%s", h.cfg.BaseURL, id),
+        }
+        w.Header().Set("Content-Type", "application/json")
+        if !created {
+            w.WriteHeader(http.StatusConflict)
+        } else {
+            w.WriteHeader(http.StatusCreated)
+        }
+        json.NewEncoder(w).Encode(resp)
+    }
 
 // RedirectURL перенаправляет по короткой ссылке
 func (h *Handler) RedirectURL(w http.ResponseWriter, r *http.Request) {

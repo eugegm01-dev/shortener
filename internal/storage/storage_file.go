@@ -15,44 +15,34 @@ type fileRecord struct {
 }
 
 type FileStorage struct {
-	mu       sync.RWMutex
-	store    map[string]string
-	filePath string
+    mu       sync.RWMutex
+    store    map[string]string // short -> original
+    urlToID  map[string]string // original -> short
+    filePath string
 }
 
 func NewFileStorage(filePath string) (*FileStorage, error) {
-	fs := &FileStorage{
-		store:    make(map[string]string),
-		filePath: filePath,
-	}
-	if err := fs.load(); err != nil {
-		return nil, err
-	}
-	return fs, nil
+    fs := &FileStorage{
+        store:    make(map[string]string),
+        urlToID:  make(map[string]string),
+        filePath: filePath,
+    }
+    if err := fs.load(); err != nil {
+        return nil, err
+    }
+    return fs, nil
 }
 
 // load загружает данные из файла (вызывается один раз при инициализации).
 func (fs *FileStorage) load() error {
-	file, err := os.Open(fs.filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // файла нет — начинаем с пустого хранилища
-		}
-		return err
-	}
-	defer file.Close()
-
-	var records []fileRecord
-	if err := json.NewDecoder(file).Decode(&records); err != nil {
-		return err
-	}
-
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	for _, rec := range records {
-		fs.store[rec.ShortURL] = rec.OriginalURL
-	}
-	return nil
+    // ... чтение records ...
+    fs.mu.Lock()
+    defer fs.mu.Unlock()
+    for _, rec := range records {
+        fs.store[rec.ShortURL] = rec.OriginalURL
+        fs.urlToID[rec.OriginalURL] = rec.ShortURL   // добавлено
+    }
+    return nil
 }
 
 // save записывает текущее состояние store в файл.
@@ -97,28 +87,31 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
-func (fs *FileStorage) Save(url string) (string, error) {
-	if url == "" {
-		return "", errEmptyURL
-	}
+func (fs *FileStorage) Save(url string) (string, bool, error) {
+    if url == "" {
+        return "", false, errEmptyURL
+    }
+    fs.mu.Lock()
+    defer fs.mu.Unlock()
 
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-
-	id := generateShortID()
-	for {
-		if _, exists := fs.store[id]; !exists {
-			break
-		}
-		id = generateShortID()
-	}
-	fs.store[id] = url
-
-	if err := fs.save(); err != nil {
-		delete(fs.store, id)
-		return "", err
-	}
-	return id, nil
+    if id, ok := fs.urlToID[url]; ok {
+        return id, false, nil
+    }
+    id := generateShortID()
+    for {
+        if _, exists := fs.store[id]; !exists {
+            break
+        }
+        id = generateShortID()
+    }
+    fs.store[id] = url
+    fs.urlToID[url] = id
+    if err := fs.save(); err != nil {
+        delete(fs.store, id)
+        delete(fs.urlToID, url)
+        return "", false, err
+    }
+    return id, true, nil
 }
 
 func (fs *FileStorage) Get(id string) (string, error) {

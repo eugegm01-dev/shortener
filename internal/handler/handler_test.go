@@ -150,13 +150,12 @@ func TestShortenURLJSON_DuplicateURL(t *testing.T) {
 
 	// Второй запрос с тем же URL
 	req2 := httptest.NewRequest(http.MethodPost, "/api/shorten", bytes.NewBufferString(requestBody))
-	req2.Header.Set("Content-Type", "application/json")
-	rr2 := httptest.NewRecorder()
-	h.ShortenURLJSON(rr2, req2)
+    rr2 := httptest.NewRecorder()
+    h.ShortenURLJSON(rr2, req2)
 
-	if rr2.Code != http.StatusCreated {
-		t.Fatalf("Second request failed with status %d", rr2.Code)
-	}
+    if rr2.Code != http.StatusConflict {   // было http.StatusCreated
+        t.Fatalf("Second request expected status %d, got %d", http.StatusConflict, rr2.Code)
+    }
 
 	var resp2 map[string]string
 	if err := json.NewDecoder(rr2.Body).Decode(&resp2); err != nil {
