@@ -10,7 +10,6 @@ import (
 
 	"github.com/eugegm01-dev/shortener/internal/models"
 	"github.com/eugegm01-dev/shortener/pkg/logger"
-	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -48,26 +47,22 @@ func (p *PostgresStorage) runMigrations() error {
 }
 
 func (p *PostgresStorage) Save(url string) (string, error) {
-	if url == "" {
-		return "", errEmptyURL
-	}
-
-	// Таблица уже должна существовать после миграции, поэтому ensureTable больше не нужен
-	for i := 0; i < 5; i++ {
-		id := generateShortID()
-		_, err := p.db.Exec("INSERT INTO urls (id, original_url) VALUES ($1, $2)", id, url)
-		if err == nil {
-			return id, nil
-		}
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			continue // collision, retry
-		}
-		return "", err
-	}
-	return "", fmt.Errorf("failed to save after multiple attempts")
+    if url == "" {
+        return "", errEmptyURL
+    }
+    id := generateShortID()
+    // Пытаемся вставить, при конфликте по unique_original_url – возвращаем существующий id
+    var existingID string
+    err := p.db.QueryRow(`
+        INSERT INTO urls (id, original_url) VALUES ($1, $2)
+        ON CONFLICT (original_url) DO UPDATE SET original_url = EXCLUDED.original_url
+        RETURNING id
+    `, id, url).Scan(&existingID)
+    if err != nil {
+        return "", err
+    }
+    return existingID, nil
 }
-
 func (p *PostgresStorage) Get(id string) (string, error) {
 	var originalURL string
 	err := p.db.QueryRow("SELECT original_url FROM urls WHERE id = $1", id).Scan(&originalURL)
@@ -119,4 +114,37 @@ func (p *PostgresStorage) Ping() error {
 
 func (p *PostgresStorage) Close() error {
 	return p.db.Close()
+}
+
+func (p *PostgresStorage) SaveBatch(urls []string) ([]string, error) {
+    if len(urls) == 0 {
+        return nil, nil
+    }
+    tx, err := p.db.Begin()
+    if err != nil {
+        return nil, err
+    }
+    defer tx.Rollback()
+
+    ids := make([]string, 0, len(urls))
+    for _, url := range urls {
+        if url == "" {
+            return nil, errEmptyURL
+        }
+        id := generateShortID()
+        var existingID string
+        err = tx.QueryRow(`
+            INSERT INTO urls (id, original_url) VALUES ($1, $2)
+            ON CONFLICT (original_url) DO UPDATE SET original_url = EXCLUDED.original_url
+            RETURNING id
+        `, id, url).Scan(&existingID)
+        if err != nil {
+            return nil, err
+        }
+        ids = append(ids, existingID)
+    }
+    if err = tx.Commit(); err != nil {
+        return nil, err
+    }
+    return ids, nil
 }

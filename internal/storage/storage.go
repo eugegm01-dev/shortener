@@ -11,46 +11,51 @@ import (
 
 // Storage определяет интерфейс хранилища URL
 type Storage interface {
-	Save(url string) (string, error)
-	Get(id string) (string, error)
-	GetAll() ([]models.URL, error)
-	Ping() error
-	Close() error
+    Save(url string) (string, error)
+    Get(id string) (string, error)
+    GetAll() ([]models.URL, error)
+    Ping() error
+    Close() error
+    // Новый метод для батч-операций
+    SaveBatch(urls []string) ([]string, error) // возвращает список ID в том же порядке
 }
-
 // MemoryStorage - хранилище в памяти
 type MemoryStorage struct {
-	mu    sync.RWMutex
-	store map[string]string
+    mu      sync.RWMutex
+    store   map[string]string // id -> original_url
+    urlToID map[string]string // original_url -> id
 }
+
 
 // NewMemoryStorage создает новое хранилище в памяти
 func NewMemoryStorage() *MemoryStorage {
-	return &MemoryStorage{
-		store: make(map[string]string),
-	}
+    return &MemoryStorage{
+        store:   make(map[string]string),
+        urlToID: make(map[string]string),
+    }
 }
 
 // Save сохраняет URL и возвращает его ID
 func (s *MemoryStorage) Save(url string) (string, error) {
-	if url == "" {
-		return "", fmt.Errorf("url cannot be empty")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Генерируем ID
-	id := generateShortID()
-
-	// Проверяем на коллизии (в реальном приложении нужна более надежная логика)
-	if _, exists := s.store[id]; exists {
-		// Если ID уже существует, генерируем новый
-		id = generateShortID()
-	}
-
-	s.store[id] = url
-	return id, nil
+    if url == "" {
+        return "", errEmptyURL
+    }
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    // Если уже есть – возвращаем существующий id
+    if id, ok := s.urlToID[url]; ok {
+        return id, nil
+    }
+    id := generateShortID()
+    for {
+        if _, exists := s.store[id]; !exists {
+            break
+        }
+        id = generateShortID()
+    }
+    s.store[id] = url
+    s.urlToID[url] = id
+    return id, nil
 }
 
 // Get возвращает URL по ID
@@ -97,4 +102,35 @@ func generateShortID() string {
 		return fmt.Sprintf("%x", b)
 	}
 	return base64.URLEncoding.EncodeToString(b)[:8]
+}
+
+func (s *MemoryStorage) SaveBatch(urls []string) ([]string, error) {
+    if len(urls) == 0 {
+        return nil, nil
+    }
+    s.mu.Lock()
+    defer s.mu.Unlock()
+
+    ids := make([]string, 0, len(urls))
+    for _, url := range urls {
+        if url == "" {
+            return nil, errEmptyURL
+        }
+        // Если уже есть – используем существующий id
+        if id, ok := s.urlToID[url]; ok {
+            ids = append(ids, id)
+            continue
+        }
+        id := generateShortID()
+        for {
+            if _, exists := s.store[id]; !exists {
+                break
+            }
+            id = generateShortID()
+        }
+        s.store[id] = url
+        s.urlToID[url] = id
+        ids = append(ids, id)
+    }
+    return ids, nil
 }

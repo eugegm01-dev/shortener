@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,21 +32,17 @@ func New(storage storage.Storage, cfg *config.Config) *Handler {
 
 // RegisterRoutes регистрирует маршруты
 func (h *Handler) RegisterRoutes(r chi.Router) {
-	// Decompress gzipped requests FIRST
-	r.Use(mw.DecompressMiddleware)
+    r.Use(mw.DecompressMiddleware)
+    r.Use(mw.LoggerMiddleware)
+    r.Use(chiMiddleware.Recoverer)
+    r.Use(chiMiddleware.Compress(5))
 
-	// Then your logger and other middleware
-	r.Use(mw.LoggerMiddleware) // your custom logger
-	r.Use(chiMiddleware.Recoverer)
-	r.Use(chiMiddleware.Compress(5)) // response compression
-
-	// Routes
-	r.Get("/ping", h.Ping)
-	r.Post("/", h.ShortenURL)
-	r.Get("/{id}", h.RedirectURL)
-	r.Post("/api/shorten", h.ShortenURLJSON)
+    r.Get("/ping", h.Ping)
+    r.Post("/", h.ShortenURL)
+    r.Get("/{id}", h.RedirectURL)
+    r.Post("/api/shorten", h.ShortenURLJSON)
+    r.Post("/api/shorten/batch", h.ShortenURLBatch) // ← новый хендлер
 }
-
 // Ping проверяет доступность сервиса
 func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	if err := h.storage.Ping(); err != nil {
@@ -146,4 +143,66 @@ func (h *Handler) sendPlainError(w http.ResponseWriter, message string, status i
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(status)
 	w.Write([]byte(message))
+}
+// ShortenURLBatch сокращает несколько URL из JSON-массива
+func (h *Handler) ShortenURLBatch(w http.ResponseWriter, r *http.Request) {
+        // 🔍 DEBUG: читаем тело ДО декодирования
+        body, err := io.ReadAll(r.Body)
+        if err != nil {
+            logger.Logger.Error().Err(err).Msg("Failed to read request body")
+            h.sendJSONError(w, "Cannot read body", http.StatusBadRequest)
+            return
+        }
+        logger.Logger.Info().Str("raw_body", string(body)).Msg("Batch request received")
+
+        // Восстанавливаем body для json.Decoder
+        r.Body = io.NopCloser(bytes.NewBuffer(body))
+
+        // Дальше твой код...
+        var req []models.BatchShortenRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+            logger.Logger.Error().Err(err).Str("body", string(body)).Msg("JSON decode failed")
+            h.sendJSONError(w, "Invalid JSON", http.StatusBadRequest)
+            return
+        }
+    defer r.Body.Close()
+
+    // Пустой батч — возвращаем пустой ответ
+    if len(req) == 0 {
+        w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusCreated)
+
+        json.NewEncoder(w).Encode([]models.BatchShortenResponse{})
+        return
+    }
+
+    // Валидация и сбор оригинальных URL
+    originalURLs := make([]string, 0, len(req))
+    for _, item := range req {
+        if item.OriginalURL == "" {
+            h.sendJSONError(w, "URL cannot be empty", http.StatusBadRequest)
+            return
+        }
+        originalURLs = append(originalURLs, item.OriginalURL)
+    }
+
+    // Сохраняем батч
+    ids, err := h.storage.SaveBatch(originalURLs)
+    if err != nil {
+        h.sendJSONError(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Формируем ответ с сохранением порядка correlation_id
+    resp := make([]models.BatchShortenResponse, 0, len(req))
+    for i, item := range req {
+        resp = append(resp, models.BatchShortenResponse{
+            CorrelationID: item.CorrelationID,
+            ShortURL:      fmt.Sprintf("%s/%s", h.cfg.BaseURL, ids[i]),
+        })
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusAccepted) // 202 — принято на обработку
+    json.NewEncoder(w).Encode(resp)
 }

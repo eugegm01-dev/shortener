@@ -156,3 +156,40 @@ var (
 	errEmptyURL = fmt.Errorf("url cannot be empty")
 	errNotFound = fmt.Errorf("url not found")
 )
+func (fs *FileStorage) SaveBatch(urls []string) ([]string, error) {
+    if len(urls) == 0 {
+        return nil, nil
+    }
+
+    fs.mu.Lock()
+    defer fs.mu.Unlock()
+
+    ids := make([]string, 0, len(urls))
+
+    for _, url := range urls {
+        if url == "" {
+            return nil, errEmptyURL
+        }
+
+        id := generateShortID()
+        for {
+            if _, exists := fs.store[id]; !exists {
+                break
+            }
+            id = generateShortID()
+        }
+        fs.store[id] = url
+        ids = append(ids, id)
+    }
+
+    // Сохраняем всё одним запросом в файл
+    if err := fs.save(); err != nil {
+        // Откат: удаляем добавленные записи
+        for _, id := range ids {
+            delete(fs.store, id)
+        }
+        return nil, err
+    }
+
+    return ids, nil
+}
