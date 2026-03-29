@@ -33,20 +33,22 @@ func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 
 // runMigrations читает и выполняет SQL-файл миграции
 func (p *PostgresStorage) runMigrations() error {
-	// Путь относительно корня проекта (там, откуда запускается бинарник)
-	migrationFile := "migrations/0001_create_urls_table.up.sql"
-	content, err := os.ReadFile(migrationFile)
-	if err != nil {
-		return fmt.Errorf("failed to read migration file: %w", err)
-	}
-
-	if _, err := p.db.Exec(string(content)); err != nil {
-		return fmt.Errorf("failed to execute migration: %w", err)
-	}
-	return nil
-}
-
-func (p *PostgresStorage) Save(url string) (string, error) {
+    files := []string{
+        "migrations/0001_create_urls_table.up.sql",
+        "migrations/0002_add_unique_original_url.up.sql",
+    }
+    for _, file := range files {
+        content, err := os.ReadFile(file)
+        if err != nil {
+            return fmt.Errorf("failed to read migration file %s: %w", file, err)
+        }
+        if _, err := p.db.Exec(string(content)); err != nil {
+            // Логируем, но не прерываем (ограничение может уже существовать)
+            logger.Logger.Warn().Err(err).Str("file", file).Msg("Migration statement failed")
+        }
+    }
+    return nil
+}func (p *PostgresStorage) Save(url string) (string, error) {
     if url == "" {
         return "", errEmptyURL
     }

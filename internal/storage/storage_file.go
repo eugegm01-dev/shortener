@@ -2,7 +2,6 @@ package storage
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"sync"
 
@@ -152,10 +151,7 @@ func (fs *FileStorage) Close() error {
 	return nil
 }
 
-var (
-	errEmptyURL = fmt.Errorf("url cannot be empty")
-	errNotFound = fmt.Errorf("url not found")
-)
+
 func (fs *FileStorage) SaveBatch(urls []string) ([]string, error) {
     if len(urls) == 0 {
         return nil, nil

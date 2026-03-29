@@ -9,6 +9,22 @@ import (
 	"github.com/eugegm01-dev/shortener/internal/models"
 )
 
+// общие ошибки для всего пакета
+var (
+    errEmptyURL = fmt.Errorf("url cannot be empty")
+    errNotFound = fmt.Errorf("url not found")
+)
+
+// generateShortID – общая функция для всех хранилищ
+func generateShortID() string {
+    b := make([]byte, 6)
+    if _, err := rand.Read(b); err != nil {
+        return fmt.Sprintf("%x", b)
+    }
+    return base64.URLEncoding.EncodeToString(b)[:8]
+}
+
+
 // Storage определяет интерфейс хранилища URL
 type Storage interface {
     Save(url string) (string, error)
@@ -97,11 +113,11 @@ func (s *MemoryStorage) Close() error {
 
 // generateShortID генерирует короткий идентификатор
 func generateShortID() string {
-	b := make([]byte, 6)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("%x", b)
-	}
-	return base64.URLEncoding.EncodeToString(b)[:8]
+    b := make([]byte, 6)
+    if _, err := rand.Read(b); err != nil {
+        return fmt.Sprintf("%x", b)
+    }
+    return base64.URLEncoding.EncodeToString(b)[:8]
 }
 
 func (s *MemoryStorage) SaveBatch(urls []string) ([]string, error) {
