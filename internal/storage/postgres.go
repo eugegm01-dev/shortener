@@ -47,8 +47,11 @@ func (p *PostgresStorage) runMigrations() error {
             logger.Logger.Warn().Err(err).Str("file", file).Msg("Migration statement failed")
         }
     }
-    return nil
-}func (p *PostgresStorage) Save(url string) (string, error) {
+        return nil
+    }
+
+    func (p *PostgresStorage) Save(url string) (string, error) {
+
     if url == "" {
         return "", errEmptyURL
     }

@@ -111,14 +111,6 @@ func (s *MemoryStorage) Close() error {
 	return nil
 }
 
-// generateShortID генерирует короткий идентификатор
-func generateShortID() string {
-    b := make([]byte, 6)
-    if _, err := rand.Read(b); err != nil {
-        return fmt.Sprintf("%x", b)
-    }
-    return base64.URLEncoding.EncodeToString(b)[:8]
-}
 
 func (s *MemoryStorage) SaveBatch(urls []string) ([]string, error) {
     if len(urls) == 0 {
