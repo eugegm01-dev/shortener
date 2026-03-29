@@ -167,3 +167,62 @@ func TestShortenURLJSON_DuplicateURL(t *testing.T) {
 		t.Error("Expected non-empty result URL for second request")
 	}
 }
+
+// Добавим тест для проверки работы аутентификации в ShortenURLJSON
+func TestShortenURLJSON_WithAuth(t *testing.T) {
+    store := storage.NewMemoryStorage()
+    defer store.Close()
+
+    cfg := &config.Config{
+        ServerAddr: ":8080",
+        BaseURL:    "http://localhost:8080",
+        SecretKey:  "test-secret",
+    }
+
+    h := New(store, cfg)
+
+    // Создаем запрос с валидной кукой
+    req := httptest.NewRequest(http.MethodPost, "/api/shorten",
+        bytes.NewBufferString(`{"url": "https://example.com"}`))
+    req.Header.Set("Content-Type", "application/json")
+
+    rr := httptest.NewRecorder()
+
+    // Используем middleware для установки куки
+    authMiddleware := h.AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        h.ShortenURLJSON(w, r)
+    }))
+
+    authMiddleware.ServeHTTP(rr, req)
+
+    if rr.Code != http.StatusCreated {
+        t.Errorf("Expected status %d, got %d", http.StatusCreated, rr.Code)
+    }
+
+    // Проверяем, что в ответе установлена кука
+    cookies := rr.Result().Cookies()
+    found := false
+    for _, cookie := range cookies {
+        if cookie.Name == "auth_token" && cookie.Value != "" {
+            found = true
+            break
+        }
+    }
+
+    if !found {
+        t.Error("Expected auth_token cookie to be set")
+    }
+
+    // Проверяем тело ответа
+    var resp struct {
+        Result string `json:"result"`
+    }
+    if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+        t.Fatalf("Failed to unmarshal response: %v", err)
+    }
+
+    expectedPrefix := cfg.BaseURL + "/"
+    if !strings.HasPrefix(resp.Result, expectedPrefix) {
+        t.Errorf("Expected result to start with %s, got %s", expectedPrefix, resp.Result)
+    }
+}
