@@ -36,6 +36,7 @@ func (p *PostgresStorage) runMigrations() error {
         "migrations/0001_create_urls_table.up.sql",
         "migrations/0002_add_unique_original_url.up.sql",
         "migrations/0003_add_user_id_to_urls.up.sql",
+        "migrations/0004_add_is_deleted_to_urls.up.sql", // ← добавьте
     }
     for _, file := range files {
         content, err := os.ReadFile(file)
@@ -48,7 +49,6 @@ func (p *PostgresStorage) runMigrations() error {
     }
     return nil
 }
-
 func (p *PostgresStorage) Save(url string) (string, bool, error) {
     return p.SaveWithUser(url, "") // Без пользователя
 }
@@ -89,23 +89,29 @@ func (p *PostgresStorage) SaveWithUser(url, userID string) (string, bool, error)
 
 func (p *PostgresStorage) Get(id string) (string, error) {
     var originalURL string
-    err := p.db.QueryRow("SELECT original_url FROM urls WHERE id = $1", id).Scan(&originalURL)
+    var isDeleted bool
+    err := p.db.QueryRow(
+        "SELECT original_url, is_deleted FROM urls WHERE id = $1", id,
+    ).Scan(&originalURL, &isDeleted)
     if err != nil {
         if errors.Is(err, sql.ErrNoRows) {
             return "", errNotFound
         }
         return "", err
     }
+    if isDeleted {
+        return "", errGone
+    }
     return originalURL, nil
 }
-
 // GetByUser возвращает все ссылки пользователя
 func (p *PostgresStorage) GetByUser(userID string) ([]models.UserURL, error) {
     rows, err := p.db.Query(`
         SELECT id, original_url FROM urls
-        WHERE user_id = $1
+        WHERE user_id = $1 AND is_deleted = false
         ORDER BY id
     `, userID)
+
     if err != nil {
         return nil, err
     }
@@ -208,4 +214,12 @@ func (p *PostgresStorage) SaveBatchWithUser(urls []string, userID string) ([]str
         return nil, err
     }
     return ids, nil
+}
+func (p *PostgresStorage) DeleteUserURLs(userID string, shortIDs []string) error {
+    if len(shortIDs) == 0 {
+        return nil
+    }
+    query := `UPDATE urls SET is_deleted = true WHERE id = ANY($1) AND user_id = $2`
+    _, err := p.db.Exec(query, shortIDs, userID)
+    return err
 }

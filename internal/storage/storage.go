@@ -1,19 +1,23 @@
 package storage
 
 import (
-    "crypto/rand"
-    "encoding/base64"
-    "fmt"
-    "sync"
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"sync"
 
-    "github.com/eugegm01-dev/shortener/internal/models"
+	"github.com/eugegm01-dev/shortener/internal/models"
 )
 
 // общие ошибки для всего пакета
 var (
     errEmptyURL = fmt.Errorf("url cannot be empty")
     errNotFound = fmt.Errorf("url not found")
+    errGone     = fmt.Errorf("url has been deleted")
 )
+
+// ErrGone экспортируемая ошибка для хендлеров
+var ErrGone = errGone
 
 // generateShortID – общая функция для всех хранилищ
 func generateShortID() string {
@@ -31,25 +35,27 @@ type Storage interface {
     Get(id string) (string, error)
     GetByUser(userID string) ([]models.UserURL, error)
     GetAll() ([]models.URL, error)
-        Ping() error
-        Close() error
-        SaveBatch(urls []string) ([]string, error)
-    }
-
+    Ping() error
+    Close() error
+    SaveBatch(urls []string) ([]string, error)
+    DeleteUserURLs(userID string, shortIDs []string) error
+}
     // MemoryStorage - хранилище в памяти
-    type MemoryStorage struct {
-        mu      sync.RWMutex
-        store   map[string]string            // id -> original_url
-        urlToID map[string]string            // original_url -> id
-        userURLs map[string]map[string]bool  // user_id -> set of url_ids
-    }
-
+type MemoryStorage struct {
+    mu       sync.RWMutex
+    store    map[string]string            // id -> original_url
+    urlToID  map[string]string            // original_url -> id
+    userURLs map[string]map[string]bool   // user_id -> set of url_ids
+    deleted  map[string]bool              // id -> deleted flag
+}
     // NewMemoryStorage создает новое хранилище в памяти
     func NewMemoryStorage() *MemoryStorage {
         return &MemoryStorage{
             store:    make(map[string]string),
             urlToID:  make(map[string]string),
             userURLs: make(map[string]map[string]bool),
+            deleted: make(map[string]bool),
+
         }
     }
 
@@ -104,40 +110,40 @@ type Storage interface {
     }
 
     // Get возвращает URL по ID
-    func (s *MemoryStorage) Get(id string) (string, error) {
-        s.mu.RLock()
-        defer s.mu.RUnlock()
-
-        url, exists := s.store[id]
-        if !exists {
-            return "", errNotFound
-        }
-        return url, nil
+func (s *MemoryStorage) Get(id string) (string, error) {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+    if s.deleted[id] {
+        return "", errGone
     }
-
+    url, exists := s.store[id]
+    if !exists {
+        return "", errNotFound
+    }
+    return url, nil
+}
     // GetByUser возвращает все ссылки пользователя
-    func (s *MemoryStorage) GetByUser(userID string) ([]models.UserURL, error) {
-        s.mu.RLock()
-        defer s.mu.RUnlock()
-
-        urlSet, exists := s.userURLs[userID]
-        if !exists || len(urlSet) == 0 {
-            return []models.UserURL{}, nil
-        }
-
-        urls := make([]models.UserURL, 0, len(urlSet))
-        for id := range urlSet {
-            if originalURL, ok := s.store[id]; ok {
-                urls = append(urls, models.UserURL{
-                    ShortURL:    "http://localhost:8080/" + id, // Базовый URL будет заменен в хендлере
-                    OriginalURL: originalURL,
-                })
-            }
-        }
-
-        return urls, nil
+func (s *MemoryStorage) GetByUser(userID string) ([]models.UserURL, error) {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+    urlSet, exists := s.userURLs[userID]
+    if !exists {
+        return []models.UserURL{}, nil
     }
-
+    urls := make([]models.UserURL, 0)
+    for id := range urlSet {
+        if s.deleted[id] {
+            continue
+        }
+        if originalURL, ok := s.store[id]; ok {
+            urls = append(urls, models.UserURL{
+                ShortURL:    "http://localhost:8080/" + id,
+                OriginalURL: originalURL,
+            })
+        }
+    }
+    return urls, nil
+}
     // GetAll возвращает все сохраненные URL
     func (s *MemoryStorage) GetAll() ([]models.URL, error) {
         s.mu.RLock()
@@ -222,3 +228,14 @@ type Storage interface {
 
         return ids, nil
     }
+func (s *MemoryStorage) DeleteUserURLs(userID string, shortIDs []string) error {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    for _, id := range shortIDs {
+        // Проверяем, принадлежит ли ссылка пользователю
+        if _, ok := s.userURLs[userID]; ok && s.userURLs[userID][id] {
+            s.deleted[id] = true
+        }
+    }
+    return nil
+}

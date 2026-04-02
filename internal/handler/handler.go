@@ -1,23 +1,24 @@
 package handler
 
 import (
-    "bytes"
-    "context"
-    "crypto/rand"
-    "encoding/json"
-    "fmt"
-    "io"
-    "net/http"
-    "strings"
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
 
-    "github.com/eugegm01-dev/shortener/internal/auth"
-    "github.com/eugegm01-dev/shortener/internal/config"
-    "github.com/eugegm01-dev/shortener/internal/models"
-    "github.com/eugegm01-dev/shortener/internal/storage"
-    "github.com/eugegm01-dev/shortener/pkg/logger"
-    mw "github.com/eugegm01-dev/shortener/pkg/middleware"
-    "github.com/go-chi/chi/v5"
-    chiMiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/eugegm01-dev/shortener/internal/auth"
+	"github.com/eugegm01-dev/shortener/internal/config"
+	"github.com/eugegm01-dev/shortener/internal/models"
+	"github.com/eugegm01-dev/shortener/internal/storage"
+	"github.com/eugegm01-dev/shortener/pkg/logger"
+	mw "github.com/eugegm01-dev/shortener/pkg/middleware"
+	"github.com/go-chi/chi/v5"
+	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 )
 
 // Определяем тип для ключа контекста
@@ -52,7 +53,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
     r.Get("/{id}", h.RedirectURL)
     r.Post("/api/shorten", h.ShortenURLJSON)
     r.Post("/api/shorten/batch", h.ShortenURLBatch)
-    r.Get("/api/user/urls", h.GetUserURLs) // ← новый хендлер
+    r.Get("/api/user/urls", h.GetUserURLs)
+    r.Delete("/api/user/urls", h.DeleteUserURLs)
 }
 
 // authMiddleware проверяет и устанавливает куки
@@ -201,6 +203,10 @@ func (h *Handler) RedirectURL(w http.ResponseWriter, r *http.Request) {
 
     originalURL, err := h.storage.Get(id)
     if err != nil {
+        if errors.Is(err, storage.ErrGone) {
+            h.sendPlainError(w, "URL has been deleted", http.StatusGone)
+            return
+        }
         h.sendPlainError(w, "URL not found", http.StatusNotFound)
         return
     }
@@ -208,7 +214,6 @@ func (h *Handler) RedirectURL(w http.ResponseWriter, r *http.Request) {
     w.Header().Set("Location", originalURL)
     w.WriteHeader(http.StatusTemporaryRedirect)
 }
-
 // GetUserURLs возвращает список ссылок авторизованного пользователя
 func (h *Handler) GetUserURLs(w http.ResponseWriter, r *http.Request) {
     // Проверяем куку еще раз (на случай если middleware не сработал)
@@ -325,4 +330,36 @@ func (h *Handler) sendPlainError(w http.ResponseWriter, message string, status i
     w.Header().Set("Content-Type", "text/plain")
     w.WriteHeader(status)
     w.Write([]byte(message))
+}
+// DeleteUserURLs асинхронно удаляет (soft delete) ссылки пользователя
+func (h *Handler) DeleteUserURLs(w http.ResponseWriter, r *http.Request) {
+    userID, ok := h.getUserIDFromContext(r)
+    if !ok || userID == "" {
+        w.WriteHeader(http.StatusUnauthorized)
+        return
+    }
+
+    var shortIDs []string
+    if err := json.NewDecoder(r.Body).Decode(&shortIDs); err != nil {
+        h.sendJSONError(w, "Invalid JSON", http.StatusBadRequest)
+        return
+    }
+
+    if len(shortIDs) == 0 {
+        w.WriteHeader(http.StatusAccepted)
+        return
+    }
+
+    // Асинхронное удаление
+    go func() {
+        if storageWithDelete, ok := h.storage.(interface {
+            DeleteUserURLs(userID string, shortIDs []string) error
+        }); ok {
+            if err := storageWithDelete.DeleteUserURLs(userID, shortIDs); err != nil {
+                logger.Logger.Error().Err(err).Str("user_id", userID).Msg("Failed to delete URLs")
+            }
+        }
+    }()
+
+    w.WriteHeader(http.StatusAccepted)
 }

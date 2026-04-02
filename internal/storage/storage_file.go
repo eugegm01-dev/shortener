@@ -1,33 +1,34 @@
 package storage
 
 import (
-    "encoding/json"
-    "os"
-    "sync"
+	"encoding/json"
+	"os"
+	"sync"
 
-    "github.com/eugegm01-dev/shortener/internal/models"
+	"github.com/eugegm01-dev/shortener/internal/models"
 )
 
 type fileRecord struct {
     UUID        string `json:"uuid"`
     ShortURL    string `json:"short_url"`
     OriginalURL string `json:"original_url"`
-    UserID      string `json:"user_id,omitempty"` // ← добавляем поле для user_id
+    UserID      string `json:"user_id,omitempty"`
+    IsDeleted   bool   `json:"is_deleted,omitempty"`
 }
-
 type FileStorage struct {
     mu       sync.RWMutex
-    store    map[string]string            // id -> original_url
-    urlToID  map[string]string            // original_url -> id
-    userURLs map[string]map[string]bool   // user_id -> set of url_ids
+    store    map[string]string
+    urlToID  map[string]string
+    userURLs map[string]map[string]bool
+    deleted  map[string]bool // ← добавьте
     filePath string
 }
-
 func NewFileStorage(filePath string) (*FileStorage, error) {
     fs := &FileStorage{
         store:    make(map[string]string),
         urlToID:  make(map[string]string),
         userURLs: make(map[string]map[string]bool),
+        deleted: make(map[string]bool),
         filePath: filePath,
     }
     if err := fs.load(); err != nil {
@@ -81,8 +82,10 @@ func (fs *FileStorage) save() error {
     for id, originalURL := range fs.store {
         // Находим user_id для этой ссылки
         var userID string
+
         for uID, urlSet := range fs.userURLs {
             if urlSet[id] {
+
                 userID = uID
                 break
             }
@@ -93,6 +96,7 @@ func (fs *FileStorage) save() error {
             ShortURL:    "http://localhost:8080/" + id,
             OriginalURL: originalURL,
             UserID:      userID,
+            IsDeleted: fs.deleted[id],
         })
     }
 
@@ -312,3 +316,13 @@ func (fs *FileStorage) SaveWithUser(url, userID string) (string, bool, error) {
         }
         return string(buf[i:])
     }
+func (fs *FileStorage) DeleteUserURLs(userID string, shortIDs []string) error {
+    fs.mu.Lock()
+    defer fs.mu.Unlock()
+    for _, id := range shortIDs {
+        if _, ok := fs.userURLs[userID]; ok && fs.userURLs[userID][id] {
+            fs.deleted[id] = true
+        }
+    }
+    return fs.save() // сохраняем изменения
+}
