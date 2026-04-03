@@ -13,7 +13,7 @@ import (
 
 // Event represents an audit event.
 type Event struct {
-	Ts     int64  `json:"ts"`                // unix timestamp
+	TS     int64  `json:"ts"`                // unix timestamp
 	Action string `json:"action"`            // "shorten" or "follow"
 	UserID string `json:"user_id,omitempty"` // may be empty
 	URL    string `json:"url"`               // original URL
