@@ -177,7 +177,9 @@ func (fs *FileStorage) SaveWithUser(url, userID string) (string, bool, error) {
 func (fs *FileStorage) Get(id string) (string, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
-
+	if fs.deleted[id] {
+		return "", errGone
+	}
 	url, ok := fs.store[id]
 	if !ok {
 		return "", errNotFound
