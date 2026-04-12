@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	_ "net/http/pprof" // <-- добавлено
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,6 +19,14 @@ import (
 func main() {
 	logger.Init()
 	cfg := config.LoadConfig()
+
+	// Запускаем pprof сервер в отдельной горутине
+	go func() {
+		logger.Logger.Info().Msg("Starting pprof server on :6060")
+		if err := http.ListenAndServe(":6060", nil); err != nil {
+			logger.Logger.Error().Err(err).Msg("pprof server failed")
+		}
+	}()
 
 	var store storage.Storage
 	var err error

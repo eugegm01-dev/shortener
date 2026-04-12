@@ -212,7 +212,9 @@ func (h *Handler) ShortenURLJSON(w http.ResponseWriter, r *http.Request) {
 	} else {
 		w.WriteHeader(http.StatusCreated)
 	}
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		logger.Logger.Error().Err(err).Msg("Failed to encode JSON response")
+	}
 
 	// Audit event
 	h.auditSubject.Notify(audit.Event{
@@ -288,7 +290,9 @@ func (h *Handler) GetUserURLs(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(response)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			logger.Logger.Error().Err(err).Msg("Failed to encode user URLs response")
+		}
 	} else {
 		w.WriteHeader(http.StatusNoContent)
 	}
