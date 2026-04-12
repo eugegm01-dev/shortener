@@ -9,8 +9,8 @@ func TestMemoryStorage(t *testing.T) {
 
 	// Test Save
 	url := "https://example.com"
-id, created, err := store.Save(url)
-_ = created
+	id, created, err := store.Save(url)
+	_ = created
 
 	if err != nil {
 		t.Fatalf("Save failed: %v", err)
@@ -50,9 +50,9 @@ _ = created
 }
 
 func TestMemoryStorageEmptyURL(t *testing.T) {
-    store := NewMemoryStorage()
-    _, _, err := store.Save("")
-    if err == nil {
-        t.Error("Expected error for empty URL")
-    }
+	store := NewMemoryStorage()
+	_, _, err := store.Save("")
+	if err == nil {
+		t.Error("Expected error for empty URL")
+	}
 }

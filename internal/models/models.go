@@ -20,20 +20,21 @@ type ShortenResponse struct {
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
+
 // BatchShortenRequest элемент запроса на пакетное сокращение
 type BatchShortenRequest struct {
-    CorrelationID string `json:"correlation_id"`
-    OriginalURL   string `json:"original_url"`
+	CorrelationID string `json:"correlation_id"`
+	OriginalURL   string `json:"original_url"`
 }
 
 // BatchShortenResponse элемент ответа на пакетное сокращение
 type BatchShortenResponse struct {
-    CorrelationID string `json:"correlation_id"`
-    ShortURL      string `json:"short_url"`
+	CorrelationID string `json:"correlation_id"`
+	ShortURL      string `json:"short_url"`
 }
 
 // UserURL — ссылка с привязкой к пользователю
 type UserURL struct {
-    ShortURL    string `json:"short_url"`
-    OriginalURL string `json:"original_url"`
+	ShortURL    string `json:"short_url"`
+	OriginalURL string `json:"original_url"`
 }
