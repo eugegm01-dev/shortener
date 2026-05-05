@@ -1,0 +1,4175 @@
+.
+├── api
+│   └── README.md
+├── benchmark_test.go
+├── cmd
+│   └── shortener
+│       ├── main.go
+│       ├── README.md
+│       └── shortener
+├── context.txt
+├── coverage.out
+├── docker-compose.yml
+├── dockerfile
+├── go.mod
+├── go.sum
+├── internal
+│   ├── app
+│   │   └── app.go
+│   ├── audit
+│   │   ├── audit.go
+│   │   └── audit_test.go
+│   ├── auth
+│   │   ├── auth.go
+│   │   └── auth_test.go
+│   ├── config
+│   │   ├── config.go
+│   │   ├── config_test.go
+│   │   ├── db
+│   │   │   └── README.md
+│   │   └── README.md
+│   ├── handler
+│   │   ├── handler.go
+│   │   ├── handler_test.go
+│   │   └── README.md
+│   ├── models
+│   │   ├── models.go
+│   │   ├── models_test.go
+│   │   └── README.md
+│   ├── README.md
+│   ├── repository
+│   │   └── README.md
+│   ├── service
+│   │   └── README.md
+│   └── storage
+│       ├── postgres.go
+│       ├── storage_file.go
+│       ├── storage_file_test.go
+│       ├── storage.go
+│       └── storage_test.go
+├── makefile
+├── migrations
+│   ├── 0001_create_urls_table.up.sql
+│   ├── 0002_add_unique_original_url.up.sql
+│   ├── 0003_add_user_id_to_urls.up.sql
+│   ├── 0004_add_is_deleted_to_urls.up.sql
+│   └── README.md
+├── pkg
+│   ├── logger
+│   │   └── logger.go
+│   ├── middleware
+│   │   ├── gzip.go
+│   │   ├── gzip_test.go
+│   │   ├── logger.go
+│   │   └── logger_test.go
+│   └── README.md
+├── README.md
+├── request.json
+├── shortener
+└── storage.json
+
+19 directories, 50 files
+
+==== ./.gitignore ====
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Binaries
+cmd/shortener/main
+cmd/shortener/shortener
+
+# Dependency directories (remove the comment below to include it)
+vendor/
+
+# IDEs directories
+.idea
+.vscode
+go-musthave-shortener-trainer/
+*.exe
+*.log
+
+# Binaries
+bin/
+shortener
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Environment variables
+.env
+
+==== ./internal/service/README.md ====
+# internal/service
+
+Пакет `service` содержит бизнес-логику и играет ключевую роль в реализации функциональности приложения.
+
+В нём описаны правила, процессы и операции, которые определяют поведение приложения.
+
+Принципы организации:
+- Сервисы должны быть независимы от деталей транспорта (HTTP, gRPC и т.д.).
+- Взаимодействие с базой данных происходит через интерфейсы репозиториев.
+- Каждый сервис должен иметь четко определенную область ответственности.
+
+
+==== ./internal/repository/README.md ====
+# internal/repository
+
+Этот пакет содержит реализацию работы с базой данных, а также со внешними сервисами.
+
+Важно, чтобы репозиторий не содержал бизнес-логику.
+
+Репозиторий реализует паттерн Repository и служит абстракцией над различными источниками данных, такими как:
+- базы данных (PostgreSQL, MySQL и др.)
+- внешние API
+- файловые системы
+- кэши (Redis, Memcached)
+- другие источники данных
+
+
+==== ./internal/storage/postgres.go ====
+package storage
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/eugegm01-dev/shortener/internal/models"
+	"github.com/eugegm01-dev/shortener/pkg/logger"
+	_ "github.com/jackc/pgx/v5/stdlib"
+)
+
+type PostgresStorage struct {
+	db *sql.DB
+}
+
+func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+
+	ps := &PostgresStorage{db: db}
+	if err := ps.runMigrations(); err != nil {
+		logger.Logger.Error().Err(err).Msg("Migration failed, but continuing")
+	}
+	return ps, nil
+}
+
+// runMigrations читает и выполняет SQL-файл миграции
+func (p *PostgresStorage) runMigrations() error {
+	files := []string{
+		"migrations/0001_create_urls_table.up.sql",
+		"migrations/0002_add_unique_original_url.up.sql",
+		"migrations/0003_add_user_id_to_urls.up.sql",
+		"migrations/0004_add_is_deleted_to_urls.up.sql", // ← добавьте
+	}
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			return fmt.Errorf("failed to read migration %s: %w", file, err)
+		}
+		if _, err := p.db.Exec(string(content)); err != nil {
+			logger.Logger.Warn().Err(err).Str("file", file).Msg("Migration failed")
+		}
+	}
+	return nil
+}
+func (p *PostgresStorage) Save(url string) (string, bool, error) {
+	return p.SaveWithUser(url, "") // Без пользователя
+}
+
+func (p *PostgresStorage) SaveWithUser(url, userID string) (string, bool, error) {
+	if url == "" {
+		return "", false, errEmptyURL
+	}
+
+	newID := GenerateShortID()
+	var id string
+
+	// Пытаемся вставить новую запись с user_id
+	query := `
+        INSERT INTO urls (id, original_url, user_id)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (original_url) DO NOTHING
+        RETURNING id
+    `
+
+	err := p.db.QueryRow(query, newID, url, userID).Scan(&id)
+	if err == sql.ErrNoRows {
+		// Конфликт – URL уже существует, получаем существующий id
+		err = p.db.QueryRow(
+			`SELECT id FROM urls WHERE original_url = $1`,
+			url,
+		).Scan(&id)
+		if err != nil {
+			return "", false, err
+		}
+		return id, false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return id, true, nil
+}
+
+func (p *PostgresStorage) Get(id string) (string, error) {
+	var originalURL string
+	var isDeleted bool
+	err := p.db.QueryRow(
+		"SELECT original_url, is_deleted FROM urls WHERE id = $1", id,
+	).Scan(&originalURL, &isDeleted)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errNotFound
+		}
+		return "", err
+	}
+	if isDeleted {
+		return "", errGone
+	}
+	return originalURL, nil
+}
+
+// GetByUser возвращает все ссылки пользователя
+func (p *PostgresStorage) GetByUser(userID string) ([]models.UserURL, error) {
+	rows, err := p.db.Query(`
+        SELECT id, original_url FROM urls
+        WHERE user_id = $1 AND is_deleted = false
+        ORDER BY id
+    `, userID)
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []models.UserURL
+	for rows.Next() {
+		var shortID, original string
+		if err := rows.Scan(&shortID, &original); err != nil {
+			return nil, err
+		}
+		result = append(result, models.UserURL{
+			ShortURL:    "http://localhost:8080/" + shortID, // Базовый URL будет заменен в хендлере
+			OriginalURL: original,
+		})
+	}
+	return result, rows.Err()
+}
+
+func (p *PostgresStorage) GetAll() ([]models.URL, error) {
+	rows, err := p.db.Query("SELECT id, original_url FROM urls")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var urls []models.URL
+	for rows.Next() {
+		var u models.URL
+		if err := rows.Scan(&u.ID, &u.URL); err != nil {
+			return nil, err
+		}
+		urls = append(urls, u)
+
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return urls, nil
+}
+
+func (p *PostgresStorage) Ping() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var lastErr error
+	for attempt := 1; attempt <= 20; attempt++ {
+		err := p.db.PingContext(ctx)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("ping failed after retries: %w", lastErr)
+}
+
+func (p *PostgresStorage) Close() error {
+	return p.db.Close()
+}
+
+func (p *PostgresStorage) SaveBatch(urls []string) ([]string, error) {
+	return p.SaveBatchWithUser(urls, "") // Без пользователя
+}
+
+func (p *PostgresStorage) SaveBatchWithUser(urls []string, userID string) ([]string, error) {
+	if len(urls) == 0 {
+		return nil, nil
+	}
+
+	tx, err := p.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	ids := make([]string, 0, len(urls))
+	for _, url := range urls {
+		if url == "" {
+			return nil, errEmptyURL
+		}
+
+		id := GenerateShortID()
+		var existingID string
+
+		err = tx.QueryRow(`
+            INSERT INTO urls (id, original_url, user_id)
+VALUES ($1, $2, $3)
+ON CONFLICT (original_url) DO NOTHING
+RETURNING id
+        `, id, url, userID).Scan(&existingID)
+
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, existingID)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+func (p *PostgresStorage) DeleteUserURLs(userID string, shortIDs []string) error {
+	if len(shortIDs) == 0 {
+		return nil
+	}
+	query := `UPDATE urls SET is_deleted = true WHERE id = ANY($1) AND user_id = $2`
+	_, err := p.db.Exec(query, shortIDs, userID)
+	return err
+}
+
+
+==== ./internal/storage/storage_file.go ====
+package storage
+
+import (
+	"encoding/json"
+	"os"
+	"strconv"
+	"sync"
+
+	"github.com/eugegm01-dev/shortener/internal/models"
+)
+
+type fileRecord struct {
+	UUID        string `json:"uuid"`
+	ShortURL    string `json:"short_url"`
+	OriginalURL string `json:"original_url"`
+	UserID      string `json:"user_id,omitempty"`
+	IsDeleted   bool   `json:"is_deleted,omitempty"`
+}
+type FileStorage struct {
+	mu       sync.RWMutex
+	store    map[string]string
+	urlToID  map[string]string
+	userURLs map[string]map[string]bool
+	deleted  map[string]bool // ← добавьте
+	filePath string
+}
+
+func NewFileStorage(filePath string) (*FileStorage, error) {
+	fs := &FileStorage{
+		store:    make(map[string]string),
+		urlToID:  make(map[string]string),
+		userURLs: make(map[string]map[string]bool),
+		deleted:  make(map[string]bool),
+		filePath: filePath,
+	}
+	if err := fs.load(); err != nil {
+		return nil, err
+	}
+	return fs, nil
+}
+
+func (fs *FileStorage) load() error {
+	file, err := os.Open(fs.filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer file.Close()
+
+	var records []fileRecord
+	if err := json.NewDecoder(file).Decode(&records); err != nil {
+		return err
+	}
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	for _, rec := range records {
+		// Извлекаем ID из ShortURL (формат: "http://localhost:8080/{id}")
+		shortURL := rec.ShortURL
+		id := shortURL
+		if len(shortURL) > 20 { // Пример: "http://localhost:8080/abc123"
+			id = shortURL[len("http://localhost:8080/"):]
+		}
+
+		fs.store[id] = rec.OriginalURL
+		fs.urlToID[rec.OriginalURL] = id
+
+		// Восстанавливаем привязки к пользователю
+		if rec.UserID != "" {
+			if fs.userURLs[rec.UserID] == nil {
+				fs.userURLs[rec.UserID] = make(map[string]bool)
+			}
+			fs.userURLs[rec.UserID][id] = true
+		}
+	}
+	return nil
+}
+
+func (fs *FileStorage) save() error {
+	records := make([]fileRecord, 0, len(fs.store))
+	for id, originalURL := range fs.store {
+		// Находим user_id для этой ссылки
+		var userID string
+		for uID, urlSet := range fs.userURLs {
+			if urlSet[id] {
+				userID = uID
+				break
+			}
+		}
+
+		records = append(records, fileRecord{
+			UUID:        strconv.Itoa(len(records) + 1), // ← используем strconv
+			ShortURL:    "http://localhost:8080/" + id,
+			OriginalURL: originalURL,
+			UserID:      userID,
+			IsDeleted:   fs.deleted[id],
+		})
+	}
+
+	file, err := os.Create(fs.filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(records)
+}
+
+func (fs *FileStorage) Save(url string) (string, bool, error) {
+	return fs.SaveWithUser(url, "")
+}
+
+func (fs *FileStorage) SaveWithUser(url, userID string) (string, bool, error) {
+	if url == "" {
+		return "", false, errEmptyURL
+	}
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	// Проверяем, существует ли уже URL
+	if id, ok := fs.urlToID[url]; ok {
+		// Привязываем существующую ссылку к пользователю
+		if userID != "" {
+			if fs.userURLs[userID] == nil {
+				fs.userURLs[userID] = make(map[string]bool)
+			}
+			fs.userURLs[userID][id] = true
+			// Сохраняем изменения в файл
+			if err := fs.save(); err != nil {
+				return "", false, err
+			}
+		}
+		return id, false, nil
+	}
+
+	// Генерируем новый ID
+	id := GenerateShortID()
+	for {
+		if _, exists := fs.store[id]; !exists {
+			break
+		}
+		id = GenerateShortID()
+	}
+
+	// Сохраняем новую запись
+	fs.store[id] = url
+	fs.urlToID[url] = id
+
+	// Привязываем к пользователю, если он есть
+	if userID != "" {
+		if fs.userURLs[userID] == nil {
+			fs.userURLs[userID] = make(map[string]bool)
+		}
+		fs.userURLs[userID][id] = true
+	}
+
+	// Сохраняем в файл
+	if err := fs.save(); err != nil {
+		// Откатываем изменения в памяти при ошибке записи
+		delete(fs.store, id)
+		delete(fs.urlToID, url)
+		if userID != "" && fs.userURLs[userID] != nil {
+			delete(fs.userURLs[userID], id)
+		}
+		return "", false, err
+	}
+
+	return id, true, nil
+}
+
+func (fs *FileStorage) Get(id string) (string, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	if fs.deleted[id] {
+		return "", errGone
+	}
+	url, ok := fs.store[id]
+	if !ok {
+		return "", errNotFound
+	}
+	return url, nil
+}
+
+// GetByUser возвращает все ссылки пользователя
+func (fs *FileStorage) GetByUser(userID string) ([]models.UserURL, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	urlSet, exists := fs.userURLs[userID]
+	if !exists || len(urlSet) == 0 {
+		return []models.UserURL{}, nil
+	}
+
+	urls := make([]models.UserURL, 0, len(urlSet))
+	for id := range urlSet {
+		if originalURL, ok := fs.store[id]; ok {
+			urls = append(urls, models.UserURL{
+				ShortURL:    "http://localhost:8080/" + id, // Базовый URL будет заменен в хендлере
+				OriginalURL: originalURL,
+			})
+		}
+	}
+
+	return urls, nil
+}
+
+func (fs *FileStorage) GetAll() ([]models.URL, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	urls := make([]models.URL, 0, len(fs.store))
+	for id, url := range fs.store {
+		urls = append(urls, models.URL{ID: id, URL: url})
+	}
+	return urls, nil
+}
+
+func (fs *FileStorage) Ping() error {
+	return nil
+}
+
+func (fs *FileStorage) Close() error {
+	return nil
+}
+
+func (fs *FileStorage) SaveBatch(urls []string) ([]string, error) {
+	return fs.SaveBatchWithUser(urls, "")
+}
+
+func (fs *FileStorage) SaveBatchWithUser(urls []string, userID string) ([]string, error) {
+	if len(urls) == 0 {
+		return nil, nil
+	}
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	ids := make([]string, 0, len(urls))
+	newRecords := make(map[string]string) // Для отката при ошибке
+
+	for _, url := range urls {
+		if url == "" {
+			return nil, errEmptyURL
+		}
+
+		// Проверяем, существует ли уже URL
+		if id, ok := fs.urlToID[url]; ok {
+			ids = append(ids, id)
+			// Привязываем существующую ссылку к пользователю
+			if userID != "" {
+				if fs.userURLs[userID] == nil {
+					fs.userURLs[userID] = make(map[string]bool)
+				}
+				fs.userURLs[userID][id] = true
+			}
+			continue
+		}
+
+		// Генерируем новый ID
+		id := GenerateShortID()
+		for {
+			if _, exists := fs.store[id]; !exists {
+				break
+			}
+			id = GenerateShortID()
+		}
+
+		// Сохраняем во временную структуру
+		fs.store[id] = url
+		fs.urlToID[url] = id
+		newRecords[id] = url
+
+		// Привязываем к пользователю
+		if userID != "" {
+			if fs.userURLs[userID] == nil {
+				fs.userURLs[userID] = make(map[string]bool)
+			}
+			fs.userURLs[userID][id] = true
+		}
+
+		ids = append(ids, id)
+	}
+
+	// Сохраняем всё одним запросом в файл
+	if err := fs.save(); err != nil {
+		// Откат: удаляем добавленные записи
+		for id := range newRecords {
+			url := newRecords[id]
+			delete(fs.store, id)
+			delete(fs.urlToID, url)
+			if userID != "" && fs.userURLs[userID] != nil {
+				delete(fs.userURLs[userID], id)
+			}
+		}
+		return nil, err
+	}
+
+	return ids, nil
+}
+
+func (fs *FileStorage) DeleteUserURLs(userID string, shortIDs []string) error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	for _, id := range shortIDs {
+		if _, ok := fs.userURLs[userID]; ok && fs.userURLs[userID][id] {
+			fs.deleted[id] = true
+		}
+	}
+	return fs.save() // сохраняем изменения
+}
+
+
+==== ./internal/storage/storage.go ====
+package storage
+
+import (
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"strings"
+	"sync"
+
+	"github.com/eugegm01-dev/shortener/internal/models"
+)
+
+// общие ошибки для всего пакета
+var (
+	errEmptyURL = fmt.Errorf("url cannot be empty")
+	errNotFound = fmt.Errorf("url not found")
+	errGone     = fmt.Errorf("url has been deleted")
+)
+
+// ErrGone экспортируемая ошибка для хендлеров
+var ErrGone = errGone
+
+// bufPool для генерации случайных байт
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 6)
+	},
+}
+
+// GenerateShortID генерирует случайный короткий идентификатор.
+func GenerateShortID() string {
+	b := bufPool.Get().([]byte)
+	defer bufPool.Put(b)
+
+	if _, err := rand.Read(b); err != nil {
+		// fallback
+		return base64.URLEncoding.EncodeToString([]byte(fmt.Sprintf("%x", b)))[:8]
+	}
+
+	var sb strings.Builder
+	sb.Grow(8)
+	enc := base64.NewEncoder(base64.URLEncoding, &sb)
+	enc.Write(b)
+	enc.Close()
+	return sb.String()[:8]
+}
+
+// Storage определяет интерфейс хранилища URL
+type Storage interface {
+	Save(url string) (id string, created bool, err error)
+	SaveWithUser(url, userID string) (id string, created bool, err error)
+	Get(id string) (string, error)
+	GetByUser(userID string) ([]models.UserURL, error)
+	GetAll() ([]models.URL, error)
+	Ping() error
+	Close() error
+	SaveBatch(urls []string) ([]string, error)
+	DeleteUserURLs(userID string, shortIDs []string) error
+}
+
+// MemoryStorage - хранилище в памяти
+type MemoryStorage struct {
+	mu       sync.RWMutex
+	store    map[string]string          // id -> original_url
+	urlToID  map[string]string          // original_url -> id
+	userURLs map[string]map[string]bool // user_id -> set of url_ids
+	deleted  map[string]bool            // id -> deleted flag
+}
+
+// NewMemoryStorage создает новое хранилище в памяти
+func NewMemoryStorage() *MemoryStorage {
+	return &MemoryStorage{
+		store:    make(map[string]string),
+		urlToID:  make(map[string]string),
+		userURLs: make(map[string]map[string]bool),
+		deleted:  make(map[string]bool),
+	}
+}
+
+// Save сохраняет URL и возвращает его ID
+func (s *MemoryStorage) Save(url string) (string, bool, error) {
+	return s.SaveWithUser(url, "") // Без пользователя
+}
+
+// SaveWithUser сохраняет URL с привязкой к userID
+func (s *MemoryStorage) SaveWithUser(url, userID string) (string, bool, error) {
+	if url == "" {
+		return "", false, errEmptyURL
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Если уже есть – возвращаем существующий id
+	if id, ok := s.urlToID[url]; ok {
+		// Привязываем к пользователю, если он есть
+		if userID != "" {
+			if s.userURLs[userID] == nil {
+				s.userURLs[userID] = make(map[string]bool)
+			}
+			s.userURLs[userID][id] = true
+		}
+		return id, false, nil
+	}
+
+	// Генерируем новый ID
+	id := GenerateShortID()
+	for {
+		if _, exists := s.store[id]; !exists {
+			break
+		}
+		id = GenerateShortID()
+	}
+
+	// Сохраняем URL
+	s.store[id] = url
+	s.urlToID[url] = id
+
+	// Привязываем к пользователю, если он есть
+	if userID != "" {
+		if s.userURLs[userID] == nil {
+			s.userURLs[userID] = make(map[string]bool)
+		}
+		s.userURLs[userID][id] = true
+	}
+
+	return id, true, nil
+}
+
+// Get возвращает URL по ID
+func (s *MemoryStorage) Get(id string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.deleted[id] {
+		return "", errGone
+	}
+	url, exists := s.store[id]
+	if !exists {
+		return "", errNotFound
+	}
+	return url, nil
+}
+
+// GetByUser возвращает все ссылки пользователя
+func (s *MemoryStorage) GetByUser(userID string) ([]models.UserURL, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	urlSet, exists := s.userURLs[userID]
+	if !exists {
+		return []models.UserURL{}, nil
+	}
+	urls := make([]models.UserURL, 0)
+	for id := range urlSet {
+		if s.deleted[id] {
+			continue
+		}
+		if originalURL, ok := s.store[id]; ok {
+			urls = append(urls, models.UserURL{
+				ShortURL:    "http://localhost:8080/" + id,
+				OriginalURL: originalURL,
+			})
+		}
+	}
+	return urls, nil
+}
+
+// GetAll возвращает все сохраненные URL
+func (s *MemoryStorage) GetAll() ([]models.URL, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	urls := make([]models.URL, 0, len(s.store))
+	for id, url := range s.store {
+		urls = append(urls, models.URL{
+			ID:  id,
+			URL: url,
+		})
+	}
+	return urls, nil
+}
+
+// Ping проверяет доступность хранилища
+func (s *MemoryStorage) Ping() error {
+	return nil
+}
+
+// Close освобождает ресурсы
+func (s *MemoryStorage) Close() error {
+	return nil
+}
+
+// SaveBatch сохраняет несколько URL
+func (s *MemoryStorage) SaveBatch(urls []string) ([]string, error) {
+	return s.SaveBatchWithUser(urls, "") // Без пользователя
+}
+
+// SaveBatchWithUser сохраняет несколько URL с привязкой к пользователю
+func (s *MemoryStorage) SaveBatchWithUser(urls []string, userID string) ([]string, error) {
+	if len(urls) == 0 {
+		return nil, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ids := make([]string, 0, len(urls))
+	for _, url := range urls {
+		if url == "" {
+			return nil, errEmptyURL
+		}
+
+		// Если уже есть – используем существующий id
+		if id, ok := s.urlToID[url]; ok {
+			ids = append(ids, id)
+			// Привязываем к пользователю
+			if userID != "" {
+				if s.userURLs[userID] == nil {
+					s.userURLs[userID] = make(map[string]bool)
+				}
+				s.userURLs[userID][id] = true
+			}
+			continue
+		}
+
+		// Генерируем новый ID
+		id := GenerateShortID()
+		for {
+			if _, exists := s.store[id]; !exists {
+				break
+			}
+			id = GenerateShortID()
+		}
+
+		// Сохраняем
+		s.store[id] = url
+		s.urlToID[url] = id
+
+		// Привязываем к пользователю
+		if userID != "" {
+			if s.userURLs[userID] == nil {
+				s.userURLs[userID] = make(map[string]bool)
+			}
+			s.userURLs[userID][id] = true
+		}
+
+		ids = append(ids, id)
+	}
+
+	return ids, nil
+}
+
+// DeleteUserURLs помечает URL пользователя как удалённые
+func (s *MemoryStorage) DeleteUserURLs(userID string, shortIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range shortIDs {
+		// Проверяем, принадлежит ли ссылка пользователю
+		if _, ok := s.userURLs[userID]; ok && s.userURLs[userID][id] {
+			s.deleted[id] = true
+		}
+	}
+	return nil
+}
+
+
+==== ./internal/storage/storage_test.go ====
+package storage
+
+import (
+	"testing"
+)
+
+func TestMemoryStorage(t *testing.T) {
+	store := NewMemoryStorage()
+
+	// Test Save
+	url := "https://example.com"
+	id, created, err := store.Save(url)
+	_ = created
+
+	if err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	if id == "" {
+		t.Error("Expected non-empty ID")
+	}
+
+	// Test Get
+	retrievedURL, err := store.Get(id)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if retrievedURL != url {
+		t.Errorf("Get() = %v, want %v", retrievedURL, url)
+	}
+
+	// Test Get non-existent
+	_, err = store.Get("nonexistent")
+	if err == nil {
+		t.Error("Expected error for non-existent ID")
+	}
+
+	// Test GetAll
+	urls, err := store.GetAll()
+	if err != nil {
+		t.Fatalf("GetAll failed: %v", err)
+	}
+	if len(urls) != 1 {
+		t.Errorf("GetAll() returned %v items, want 1", len(urls))
+	}
+
+	// Test Ping
+	if err := store.Ping(); err != nil {
+		t.Errorf("Ping() failed: %v", err)
+	}
+}
+
+func TestMemoryStorageEmptyURL(t *testing.T) {
+	store := NewMemoryStorage()
+	_, _, err := store.Save("")
+	if err == nil {
+		t.Error("Expected error for empty URL")
+	}
+}
+
+func TestMemoryStorage_GetByUser(t *testing.T) {
+	store := NewMemoryStorage()
+	userID := "user1"
+
+	// Сохраняем URL от пользователя
+	id1, _, _ := store.SaveWithUser("https://example.com/1", userID)
+	id2, _, _ := store.SaveWithUser("https://example.com/2", userID)
+
+	urls, err := store.GetByUser(userID)
+	if err != nil {
+		t.Fatalf("GetByUser failed: %v", err)
+	}
+	if len(urls) != 2 {
+		t.Errorf("Expected 2 URLs, got %d", len(urls))
+	}
+
+	// Проверяем содержимое (без учёта порядка)
+	found := make(map[string]bool)
+	for _, u := range urls {
+		found[u.ShortURL] = true
+	}
+	if !found["http://localhost:8080/"+id1] || !found["http://localhost:8080/"+id2] {
+		t.Error("Missing expected short URLs")
+	}
+}
+
+func TestMemoryStorage_DeleteUserURLs(t *testing.T) {
+	store := NewMemoryStorage()
+	userID := "user1"
+
+	id1, _, _ := store.SaveWithUser("https://example.com/1", userID)
+	id2, _, _ := store.SaveWithUser("https://example.com/2", userID)
+
+	err := store.DeleteUserURLs(userID, []string{id1})
+	if err != nil {
+		t.Fatalf("DeleteUserURLs failed: %v", err)
+	}
+
+	_, err = store.Get(id1)
+	if err != errGone {
+		t.Errorf("Expected errGone for deleted URL, got %v", err)
+	}
+
+	_, err = store.Get(id2)
+	if err != nil {
+		t.Errorf("Non-deleted URL should be accessible, got error: %v", err)
+	}
+}
+
+func TestMemoryStorage_SaveBatch(t *testing.T) {
+	store := NewMemoryStorage()
+	urls := []string{"https://a.com", "https://b.com"}
+	ids, err := store.SaveBatch(urls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Errorf("Expected 2 ids, got %d", len(ids))
+	}
+	// Проверим, что URLs сохранились
+	for _, id := range ids {
+		_, err := store.Get(id)
+		if err != nil {
+			t.Errorf("Get failed for %s: %v", id, err)
+		}
+	}
+}
+
+func TestMemoryStorage_PingAndClose(t *testing.T) {
+	store := NewMemoryStorage()
+	if err := store.Ping(); err != nil {
+		t.Error("Ping should not fail")
+	}
+	if err := store.Close(); err != nil {
+		t.Error("Close should not fail")
+	}
+}
+
+func TestMemoryStorage_GetAll(t *testing.T) {
+	store := NewMemoryStorage()
+	store.Save("https://1.com")
+	store.Save("https://2.com")
+	all, err := store.GetAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Errorf("Expected 2 URLs, got %d", len(all))
+	}
+}
+func TestMemoryStorage_SaveBatchWithUser(t *testing.T) {
+	store := NewMemoryStorage()
+	user := "user1"
+	urls := []string{"https://a.com", "https://b.com"}
+	ids, err := store.SaveBatchWithUser(urls, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Errorf("Expected 2 ids, got %d", len(ids))
+	}
+	userURLs, _ := store.GetByUser(user)
+	if len(userURLs) != 2 {
+		t.Errorf("Expected 2 user URLs, got %d", len(userURLs))
+	}
+}
+
+func TestMemoryStorage_GetByUser_NoURLs(t *testing.T) {
+	store := NewMemoryStorage()
+	urls, err := store.GetByUser("nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(urls) != 0 {
+		t.Errorf("Expected empty slice, got %v", urls)
+	}
+}
+
+func TestMemoryStorage_GenerateShortID_Length(t *testing.T) {
+	id := GenerateShortID()
+	if len(id) != 8 {
+		t.Errorf("Expected ID length 8, got %d", len(id))
+	}
+}
+
+
+==== ./internal/storage/storage_file_test.go ====
+package storage
+
+import (
+	"testing"
+)
+
+func TestFileStorage_SaveAndGet(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/storage.json"
+
+	fs, err := NewFileStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+
+	url := "https://example.com"
+	id, created, err := fs.Save(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Error("Expected created=true for new URL")
+	}
+
+	got, err := fs.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != url {
+		t.Errorf("Expected %s, got %s", url, got)
+	}
+}
+
+func TestFileStorage_SaveDuplicate(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/storage.json"
+
+	fs, _ := NewFileStorage(path)
+	defer fs.Close()
+
+	url := "https://dup.com"
+	id1, _, _ := fs.Save(url)
+	id2, created2, _ := fs.Save(url)
+
+	if id1 != id2 {
+		t.Error("IDs should be same for duplicate URL")
+	}
+	if created2 {
+		t.Error("Expected created=false for duplicate")
+	}
+}
+
+func TestFileStorage_GetByUser(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/storage.json"
+
+	fs, _ := NewFileStorage(path)
+	defer fs.Close()
+
+	user1 := "user1"
+	fs.SaveWithUser("https://u1.com/1", user1)
+	fs.SaveWithUser("https://u1.com/2", user1)
+	fs.SaveWithUser("https://u2.com/1", "user2")
+
+	urls, err := fs.GetByUser(user1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(urls) != 2 {
+		t.Errorf("Expected 2 URLs, got %d", len(urls))
+	}
+}
+
+func TestFileStorage_DeleteUserURLs(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/storage.json"
+
+	fs, _ := NewFileStorage(path)
+	defer fs.Close()
+
+	user := "user1"
+	id1, _, _ := fs.SaveWithUser("https://del.com/1", user)
+	id2, _, _ := fs.SaveWithUser("https://del.com/2", user)
+
+	err := fs.DeleteUserURLs(user, []string{id1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = fs.Get(id1)
+	if err != errGone {
+		t.Errorf("Expected errGone, got %v", err)
+	}
+	_, err = fs.Get(id2)
+	if err != nil {
+		t.Errorf("Non-deleted URL should be accessible: %v", err)
+	}
+}
+
+func TestFileStorage_Persistence(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/storage.json"
+
+	fs1, _ := NewFileStorage(path)
+	url := "https://persist.com"
+	id, _, _ := fs1.Save(url)
+	fs1.Close()
+
+	fs2, _ := NewFileStorage(path)
+	defer fs2.Close()
+
+	got, err := fs2.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != url {
+		t.Errorf("Expected %s, got %s", url, got)
+	}
+}
+
+
+==== ./internal/auth/auth.go ====
+package auth
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
+	"net/http"
+	"strings"
+)
+
+const cookieName = "auth_token"
+
+// SignCookie создаёт подписанную куку: base64(userID) + "." + base64(HMAC)
+func SignCookie(userID, secretKey string) (*http.Cookie, error) {
+	if secretKey == "" {
+		return nil, errors.New("secret key is empty")
+	}
+
+	// Кодируем user_id в base64
+	encodedID := base64.URLEncoding.EncodeToString([]byte(userID))
+
+	// Считаем HMAC-SHA256 от encodedID
+	h := hmac.New(sha256.New, []byte(secretKey))
+	h.Write([]byte(encodedID))
+	signature := base64.URLEncoding.EncodeToString(h.Sum(nil))
+
+	// Формируем значение куки: encodedID.signature
+	value := encodedID + "." + signature
+
+	return &http.Cookie{
+		Name:     cookieName,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   false, // true в продакшене с HTTPS
+		SameSite: http.SameSiteLaxMode,
+	}, nil
+}
+
+// VerifyCookie проверяет подпись и возвращает user_id
+func VerifyCookie(r *http.Request, secretKey string) (string, error) {
+	cookie, err := r.Cookie(cookieName)
+	if err != nil {
+		return "", err // Просто возвращаем ошибку, если куки нет
+	}
+
+	parts := strings.SplitN(cookie.Value, ".", 2)
+	if len(parts) != 2 {
+		return "", errors.New("invalid cookie format")
+	}
+
+	encodedID, signature := parts[0], parts[1]
+
+	// Проверяем HMAC
+	h := hmac.New(sha256.New, []byte(secretKey))
+	h.Write([]byte(encodedID))
+	expectedSig := base64.URLEncoding.EncodeToString(h.Sum(nil))
+
+	if !hmac.Equal([]byte(signature), []byte(expectedSig)) {
+		return "", errors.New("invalid cookie signature")
+	}
+
+	// Декодируем user_id
+	userID, err := base64.URLEncoding.DecodeString(encodedID)
+	if err != nil {
+		return "", errors.New("failed to decode user ID")
+	}
+
+	return string(userID), nil
+}
+
+
+==== ./internal/auth/auth_test.go ====
+package auth
+
+import (
+	"net/http/httptest"
+	"testing"
+)
+
+func TestSignAndVerifyCookie(t *testing.T) {
+	secret := "test-secret"
+	userID := "user123"
+
+	cookie, err := SignCookie(userID, secret)
+	if err != nil {
+		t.Fatalf("SignCookie failed: %v", err)
+	}
+	if cookie.Name != "auth_token" {
+		t.Errorf("Expected cookie name 'auth_token', got '%s'", cookie.Name)
+	}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(cookie)
+
+	gotUserID, err := VerifyCookie(req, secret)
+	if err != nil {
+		t.Fatalf("VerifyCookie failed: %v", err)
+	}
+	if gotUserID != userID {
+		t.Errorf("Expected userID '%s', got '%s'", userID, gotUserID)
+	}
+}
+
+func TestSignCookieEmptySecret(t *testing.T) {
+	_, err := SignCookie("user", "")
+	if err == nil {
+		t.Error("Expected error for empty secret")
+	}
+}
+
+func TestVerifyCookieInvalidSignature(t *testing.T) {
+	secret := "test-secret"
+	cookie, _ := SignCookie("user", secret)
+	cookie.Value = "invalid.signature"
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(cookie)
+
+	_, err := VerifyCookie(req, secret)
+	if err == nil {
+		t.Error("Expected error for invalid signature")
+	}
+}
+
+
+==== ./internal/README.md ====
+# internal
+
+В этой директории размещается код внутренних модулей приложения. Код внутри этого пакета недоступен для импорта в других приложениях.
+
+Директория `internal/` является специальной в Go и обеспечивает инкапсуляцию кода на уровне модуля. Компилятор Go запрещает импорт пакетов из `internal/` за пределами родительского модуля.
+
+
+==== ./internal/app/app.go ====
+package app
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/eugegm01-dev/shortener/internal/config"
+	"github.com/eugegm01-dev/shortener/internal/handler"
+	"github.com/eugegm01-dev/shortener/internal/storage"
+)
+
+// Application представляет основное приложение
+type Application struct {
+	cfg     *config.Config
+	storage storage.Storage
+	router  chi.Router
+	server  *http.Server
+}
+
+// New создает новое приложение
+func New(cfg *config.Config, storage storage.Storage) *Application {
+	app := &Application{
+		cfg:     cfg,
+		storage: storage,
+		router:  chi.NewRouter(),
+	}
+
+	// Инициализация обработчиков
+	h := handler.New(storage, cfg)
+	h.RegisterRoutes(app.router)
+
+	// Настройка HTTP сервера
+	app.server = &http.Server{
+		Addr:    cfg.ServerAddr,
+		Handler: app.router,
+	}
+
+	return app
+}
+
+// Run запускает приложение
+func (app *Application) Run() error {
+	return app.server.ListenAndServe()
+}
+
+// Shutdown корректно останавливает приложение
+func (app *Application) Shutdown(ctx context.Context) error {
+	// Закрываем хранилище
+	if err := app.storage.Close(); err != nil {
+		return err
+	}
+
+	// Останавливаем сервер
+	return app.server.Shutdown(ctx)
+}
+
+
+==== ./internal/config/README.md ====
+# internal/config
+
+В этом пакете хранятся конфигурации приложения.
+
+Загрузку конфигурации можно реализовать из различных источников, например: файлов, переменных окружения, баз данных и других.
+
+
+==== ./internal/config/config.go ====
+package config
+
+import (
+	"flag"
+	"os"
+)
+
+type Config struct {
+	ServerAddr      string
+	BaseURL         string
+	FileStoragePath string
+	DatabaseDSN     string
+	SecretKey       string
+	AuditFile       string // new
+	AuditURL        string // new
+}
+
+func LoadConfig() *Config {
+	cfg := &Config{
+		ServerAddr:      ":8080",
+		BaseURL:         "http://localhost:8080",
+		FileStoragePath: "storage.json",
+		SecretKey:       "default-secret-key",
+		AuditFile:       "",
+		AuditURL:        "",
+	}
+
+	flag.StringVar(&cfg.ServerAddr, "a", cfg.ServerAddr, "HTTP server address")
+	flag.StringVar(&cfg.BaseURL, "b", cfg.BaseURL, "Base URL for shortened links")
+	flag.StringVar(&cfg.FileStoragePath, "f", cfg.FileStoragePath, "File storage path (JSON)")
+	flag.StringVar(&cfg.DatabaseDSN, "d", "", "Database DSN (PostgreSQL)")
+	flag.StringVar(&cfg.SecretKey, "s", cfg.SecretKey, "Secret key for cookie signing")
+	flag.StringVar(&cfg.AuditFile, "audit-file", cfg.AuditFile, "Path to audit log file")
+	flag.StringVar(&cfg.AuditURL, "audit-url", cfg.AuditURL, "URL of remote audit receiver")
+
+	flag.Parse()
+
+	// Environment variables override
+	if envAddr := os.Getenv("SERVER_ADDRESS"); envAddr != "" {
+		cfg.ServerAddr = envAddr
+	}
+	if envBaseURL := os.Getenv("BASE_URL"); envBaseURL != "" {
+		cfg.BaseURL = envBaseURL
+	}
+	if envFilePath := os.Getenv("FILE_STORAGE_PATH"); envFilePath != "" {
+		cfg.FileStoragePath = envFilePath
+	}
+	if envDSN := os.Getenv("DATABASE_DSN"); envDSN != "" {
+		cfg.DatabaseDSN = envDSN
+	}
+	if envSecret := os.Getenv("SECRET_KEY"); envSecret != "" {
+		cfg.SecretKey = envSecret
+	}
+	if envAuditFile := os.Getenv("AUDIT_FILE"); envAuditFile != "" {
+		cfg.AuditFile = envAuditFile
+	}
+	if envAuditURL := os.Getenv("AUDIT_URL"); envAuditURL != "" {
+		cfg.AuditURL = envAuditURL
+	}
+
+	return cfg
+}
+
+
+==== ./internal/config/config_test.go ====
+package config
+
+import (
+	"flag"
+	"os"
+	"testing"
+)
+
+func TestLoadConfig(t *testing.T) {
+	// Сохраняем оригинальные значения
+	originalArgs := os.Args
+	defer func() { os.Args = originalArgs }()
+
+	tests := []struct {
+		name     string
+		args     []string
+		envVars  map[string]string
+		wantAddr string
+		wantURL  string
+	}{
+		{
+			name:     "default values",
+			args:     []string{"test"},
+			envVars:  map[string]string{},
+			wantAddr: ":8080",
+			wantURL:  "http://localhost:8080",
+		},
+		{
+			name:     "with flags only",
+			args:     []string{"test", "-a", ":9090", "-b", "http://example.com"},
+			envVars:  map[string]string{},
+			wantAddr: ":9090",
+			wantURL:  "http://example.com",
+		},
+		{
+			name: "env vars override defaults",
+			args: []string{"test"},
+			envVars: map[string]string{
+				"SERVER_ADDRESS": ":8888",
+				"BASE_URL":       "http://custom.com",
+			},
+			wantAddr: ":8888",
+			wantURL:  "http://custom.com",
+		},
+		{
+			name: "env vars override flags",
+			args: []string{"test", "-a", ":9090", "-b", "http://example.com"},
+			envVars: map[string]string{
+				"SERVER_ADDRESS": ":7777",
+				"BASE_URL":       "http://env.com",
+			},
+			wantAddr: ":7777",
+			wantURL:  "http://env.com",
+		},
+		{
+			name: "partial env vars with flags",
+			args: []string{"test", "-a", ":9090"},
+			envVars: map[string]string{
+				"BASE_URL": "http://env-only.com",
+			},
+			wantAddr: ":9090",
+			wantURL:  "http://env-only.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Устанавливаем флаги
+			os.Args = tt.args
+
+			// Устанавливаем переменные окружения
+			for key, value := range tt.envVars {
+				os.Setenv(key, value)
+			}
+			defer func() {
+				for key := range tt.envVars {
+					os.Unsetenv(key)
+				}
+			}()
+
+			// Сбрасываем флаги
+			flag.CommandLine = flag.NewFlagSet(tt.args[0], flag.ExitOnError)
+
+			cfg := LoadConfig()
+
+			if cfg.ServerAddr != tt.wantAddr {
+				t.Errorf("ServerAddr = %v, want %v", cfg.ServerAddr, tt.wantAddr)
+			}
+			if cfg.BaseURL != tt.wantURL {
+				t.Errorf("BaseURL = %v, want %v", cfg.BaseURL, tt.wantURL)
+			}
+		})
+	}
+}
+
+
+==== ./internal/config/db/README.md ====
+# internal/config/db
+
+Описание конфигурации подключения к базе данных.
+
+Этот пакет содержит:
+- структуры конфигурации для подключения к БД
+- параметры соединения и пула подключений
+- настройки для различных типов баз данных
+- логику инициализации подключения
+
+==== ./internal/models/README.md ====
+# internal/model
+
+В этом пакете содержатся структуры данных, которые описывают основные сущности предметной области приложения.
+
+Эти структуры используются в сервисах и хэндлерах. Данный пакет не должен содержать бизнес-логику приложения.
+
+
+==== ./internal/models/models_test.go ====
+package models
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestStructuresSerialization(t *testing.T) {
+	req := ShortenRequest{URL: "https://a.com"}
+	data, _ := json.Marshal(req)
+	if string(data) != `{"url":"https://a.com"}` {
+		t.Errorf("Unexpected JSON: %s", data)
+	}
+
+	resp := ShortenResponse{Result: "http://localhost/abc"}
+	data, _ = json.Marshal(resp)
+	if string(data) != `{"result":"http://localhost/abc"}` {
+		t.Errorf("Unexpected JSON: %s", data)
+	}
+}
+
+
+==== ./internal/models/models.go ====
+package models
+
+// URL представляет собой модель данных для хранения ссылок
+type URL struct {
+	ID  string `json:"id"`
+	URL string `json:"url"`
+}
+
+// ShortenRequest представляет запрос на сокращение URL
+type ShortenRequest struct {
+	URL string `json:"url"`
+}
+
+// ShortenResponse представляет ответ на запрос сокращения URL
+type ShortenResponse struct {
+	Result string `json:"result"`
+}
+
+// ErrorResponse представляет структуру для ошибок API
+type ErrorResponse struct {
+	Error string `json:"error"`
+}
+
+// BatchShortenRequest элемент запроса на пакетное сокращение
+type BatchShortenRequest struct {
+	CorrelationID string `json:"correlation_id"`
+	OriginalURL   string `json:"original_url"`
+}
+
+// BatchShortenResponse элемент ответа на пакетное сокращение
+type BatchShortenResponse struct {
+	CorrelationID string `json:"correlation_id"`
+	ShortURL      string `json:"short_url"`
+}
+
+// UserURL — ссылка с привязкой к пользователю
+type UserURL struct {
+	ShortURL    string `json:"short_url"`
+	OriginalURL string `json:"original_url"`
+}
+
+
+==== ./internal/audit/audit.go ====
+package audit
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"sync"
+	"time"
+)
+
+// Event represents an audit event.
+type Event struct {
+	TS     int64  `json:"ts"`                // unix timestamp
+	Action string `json:"action"`            // "shorten" or "follow"
+	UserID string `json:"user_id,omitempty"` // may be empty
+	URL    string `json:"url"`               // original URL
+}
+
+// Observer defines the interface for audit observers.
+type Observer interface {
+	Send(event Event) error
+}
+
+// Subject manages observers and notifies them.
+type Subject struct {
+	observers []Observer
+	mu        sync.RWMutex
+}
+
+// NewSubject creates a new audit subject.
+func NewSubject() *Subject {
+	return &Subject{
+		observers: make([]Observer, 0),
+	}
+}
+
+// Attach adds an observer.
+func (s *Subject) Attach(o Observer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observers = append(s.observers, o)
+}
+
+// Notify sends the event to all observers asynchronously.
+func (s *Subject) Notify(event Event) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, o := range s.observers {
+		go func(obs Observer, ev Event) {
+			_ = obs.Send(ev) // errors are ignored for now
+		}(o, event)
+	}
+}
+
+// FileObserver writes events to a file (one JSON per line).
+type FileObserver struct {
+	filePath string
+	mu       sync.Mutex
+}
+
+// NewFileObserver creates a file observer.
+// It ensures the file exists (or creates it) but does not keep it open.
+func NewFileObserver(path string) (*FileObserver, error) {
+	// Create or open file to verify permissions
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
+	f.Close()
+	return &FileObserver{filePath: path}, nil
+}
+
+// Send appends a JSON line to the file.
+func (f *FileObserver) Send(event Event) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	file, err := os.OpenFile(f.filePath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	_, err = file.Write(data)
+	return err
+}
+
+// HTTPObserver sends events via HTTP POST.
+type HTTPObserver struct {
+	url    string
+	client *http.Client
+}
+
+// NewHTTPObserver creates an HTTP observer.
+func NewHTTPObserver(url string) *HTTPObserver {
+	return &HTTPObserver{
+		url:    url,
+		client: &http.Client{Timeout: 5 * time.Second},
+	}
+}
+
+// Send performs a POST request with the event JSON.
+func (h *HTTPObserver) Send(event Event) error {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	resp, err := h.client.Post(h.url, "application/json", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	// discard body to reuse connection
+	io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("audit HTTP observer got status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+
+==== ./internal/audit/audit_test.go ====
+package audit
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"testing"
+	"time"
+)
+
+func TestSubjectNotify(t *testing.T) {
+	s := NewSubject()
+	mock := &mockObserver{ch: make(chan Event, 1)}
+	s.Attach(mock)
+
+	event := Event{TS: 123, Action: "test", UserID: "u1", URL: "http://example.com"}
+	s.Notify(event)
+
+	select {
+	case got := <-mock.ch:
+		if got.TS != event.TS || got.Action != event.Action {
+			t.Errorf("Event mismatch: %+v", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("No event received within timeout")
+	}
+}
+
+type mockObserver struct {
+	ch chan Event
+}
+
+func (m *mockObserver) Send(e Event) error {
+	m.ch <- e
+	return nil
+}
+
+func TestFileObserver(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/audit.log"
+
+	fo, err := NewFileObserver(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := Event{TS: 100, Action: "shorten", UserID: "u1", URL: "http://x.com"}
+	if err := fo.Send(event); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Event
+	if err := json.Unmarshal(data[:len(data)-1], &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.TS != 100 {
+		t.Errorf("Expected TS 100, got %d", got.TS)
+	}
+}
+
+func TestHTTPObserver(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var e Event
+		if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if e.Action != "test" {
+			http.Error(w, "bad action", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	ho := NewHTTPObserver(ts.URL)
+	err := ho.Send(Event{TS: 1, Action: "test"})
+	if err != nil {
+		t.Errorf("Send failed: %v", err)
+	}
+}
+
+
+==== ./internal/handler/handler.go ====
+package handler
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/eugegm01-dev/shortener/internal/audit"
+	"github.com/eugegm01-dev/shortener/internal/auth"
+	"github.com/eugegm01-dev/shortener/internal/config"
+	"github.com/eugegm01-dev/shortener/internal/models"
+	"github.com/eugegm01-dev/shortener/internal/storage"
+	"github.com/eugegm01-dev/shortener/pkg/logger"
+	mw "github.com/eugegm01-dev/shortener/pkg/middleware"
+	"github.com/go-chi/chi/v5"
+	chiMiddleware "github.com/go-chi/chi/v5/middleware"
+)
+
+type contextKey string
+
+const userIDKey contextKey = "userID"
+
+type Handler struct {
+	storage      storage.Storage
+	cfg          *config.Config
+	auditSubject *audit.Subject
+}
+
+func New(storage storage.Storage, cfg *config.Config) *Handler {
+	h := &Handler{
+		storage:      storage,
+		cfg:          cfg,
+		auditSubject: audit.NewSubject(),
+	}
+
+	// Attach file observer if path provided
+	if cfg.AuditFile != "" {
+		fo, err := audit.NewFileObserver(cfg.AuditFile)
+		if err != nil {
+			logger.Logger.Error().Err(err).Str("path", cfg.AuditFile).Msg("Failed to create file audit observer")
+		} else {
+			h.auditSubject.Attach(fo)
+			logger.Logger.Info().Str("path", cfg.AuditFile).Msg("File audit observer enabled")
+		}
+	}
+
+	// Attach HTTP observer if URL provided
+	if cfg.AuditURL != "" {
+		ho := audit.NewHTTPObserver(cfg.AuditURL)
+		h.auditSubject.Attach(ho)
+		logger.Logger.Info().Str("url", cfg.AuditURL).Msg("HTTP audit observer enabled")
+	}
+
+	return h
+}
+
+// RegisterRoutes registers all HTTP routes.
+func (h *Handler) RegisterRoutes(r chi.Router) {
+	r.Use(mw.DecompressMiddleware)
+	r.Use(mw.LoggerMiddleware)
+	r.Use(chiMiddleware.Recoverer)
+	r.Use(chiMiddleware.Compress(5))
+	r.Use(h.authMiddleware)
+
+	r.Get("/ping", h.Ping)
+	r.Post("/", h.ShortenURL)
+	r.Get("/{id}", h.RedirectURL)
+	r.Post("/api/shorten", h.ShortenURLJSON)
+	r.Post("/api/shorten/batch", h.ShortenURLBatch)
+	r.Get("/api/user/urls", h.GetUserURLs)
+	r.Delete("/api/user/urls", h.DeleteUserURLs)
+}
+
+// authMiddleware checks or sets the authentication cookie.
+func (h *Handler) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userID, err := auth.VerifyCookie(r, h.cfg.SecretKey)
+		if err != nil {
+			userID = generateUserID()
+			cookie, err := auth.SignCookie(userID, h.cfg.SecretKey)
+			if err != nil {
+				logger.Logger.Error().Err(err).Msg("Failed to sign cookie")
+			} else {
+				http.SetCookie(w, cookie)
+			}
+		}
+		ctx := context.WithValue(r.Context(), userIDKey, userID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// generateUserID creates a random user ID.
+func generateUserID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return fmt.Sprintf("%x", b)
+}
+
+// getUserIDFromContext extracts userID from request context.
+func (h *Handler) getUserIDFromContext(r *http.Request) (string, bool) {
+	userID, ok := r.Context().Value(userIDKey).(string)
+	return userID, ok
+}
+
+// Ping checks storage health.
+func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
+	if err := h.storage.Ping(); err != nil {
+		logger.Logger.Error().Err(err).Msg("Ping failed")
+		h.sendJSONError(w, "Storage unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "OK"})
+}
+
+// ShortenURL handles plain text shortening.
+func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.sendPlainError(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	originalURL := string(body)
+	if originalURL == "" {
+		h.sendPlainError(w, "URL cannot be empty", http.StatusBadRequest)
+		return
+	}
+
+	userID, _ := h.getUserIDFromContext(r)
+	var id string
+	var created bool
+
+	if storageWithUser, ok := h.storage.(interface {
+		SaveWithUser(url, userID string) (string, bool, error)
+	}); ok && userID != "" {
+		id, created, err = storageWithUser.SaveWithUser(originalURL, userID)
+	} else {
+		id, created, err = h.storage.Save(originalURL)
+	}
+
+	if err != nil {
+		h.sendPlainError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	shortURL := fmt.Sprintf("%s/%s", h.cfg.BaseURL, id)
+	w.Header().Set("Content-Type", "text/plain")
+	if !created {
+		w.WriteHeader(http.StatusConflict)
+	} else {
+		w.WriteHeader(http.StatusCreated)
+	}
+	w.Write([]byte(shortURL))
+
+	// Audit event
+	h.auditSubject.Notify(audit.Event{
+		TS:     time.Now().Unix(),
+		Action: "shorten",
+		UserID: userID,
+		URL:    originalURL,
+	})
+}
+
+// ShortenURLJSON handles JSON shortening.
+func (h *Handler) ShortenURLJSON(w http.ResponseWriter, r *http.Request) {
+	var req models.ShortenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.sendJSONError(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	if req.URL == "" {
+		h.sendJSONError(w, "URL is required", http.StatusBadRequest)
+		return
+	}
+
+	userID, _ := h.getUserIDFromContext(r)
+	var id string
+	var created bool
+	var err error
+
+	if storageWithUser, ok := h.storage.(interface {
+		SaveWithUser(url, userID string) (string, bool, error)
+	}); ok && userID != "" {
+		id, created, err = storageWithUser.SaveWithUser(req.URL, userID)
+	} else {
+		id, created, err = h.storage.Save(req.URL)
+	}
+
+	if err != nil {
+		h.sendJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := models.ShortenResponse{
+		Result: fmt.Sprintf("%s/%s", h.cfg.BaseURL, id),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if !created {
+		w.WriteHeader(http.StatusConflict)
+	} else {
+		w.WriteHeader(http.StatusCreated)
+	}
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		logger.Logger.Error().Err(err).Msg("Failed to encode JSON response")
+	}
+
+	// Audit event
+	h.auditSubject.Notify(audit.Event{
+		TS:     time.Now().Unix(),
+		Action: "shorten",
+		UserID: userID,
+		URL:    req.URL,
+	})
+}
+
+// RedirectURL redirects short URL to original.
+func (h *Handler) RedirectURL(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		h.sendPlainError(w, "ID is required", http.StatusBadRequest)
+		return
+	}
+
+	originalURL, err := h.storage.Get(id)
+	if err != nil {
+		if errors.Is(err, storage.ErrGone) {
+			h.sendPlainError(w, "URL has been deleted", http.StatusGone)
+			return
+		}
+		h.sendPlainError(w, "URL not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Location", originalURL)
+	w.WriteHeader(http.StatusTemporaryRedirect)
+
+	userID, _ := h.getUserIDFromContext(r)
+	h.auditSubject.Notify(audit.Event{
+		TS:     time.Now().Unix(),
+		Action: "follow",
+		UserID: userID,
+		URL:    originalURL,
+	})
+}
+
+// GetUserURLs returns all URLs belonging to the authenticated user.
+func (h *Handler) GetUserURLs(w http.ResponseWriter, r *http.Request) {
+	userID, err := auth.VerifyCookie(r, h.cfg.SecretKey)
+	if err != nil {
+		if _, cookieErr := r.Cookie("auth_token"); cookieErr == nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if storageWithUser, ok := h.storage.(interface {
+		GetByUser(userID string) ([]models.UserURL, error)
+	}); ok {
+		urls, err := storageWithUser.GetByUser(userID)
+		if err != nil {
+			logger.Logger.Error().Err(err).Str("user_id", userID).Msg("Failed to get user URLs")
+			h.sendJSONError(w, "Internal error", http.StatusInternalServerError)
+			return
+		}
+		if len(urls) == 0 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		response := make([]map[string]string, len(urls))
+		for i, url := range urls {
+			shortURL := h.cfg.BaseURL + "/" + strings.TrimPrefix(url.ShortURL, "http://localhost:8080/")
+			response[i] = map[string]string{
+				"short_url":    shortURL,
+				"original_url": url.OriginalURL,
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			logger.Logger.Error().Err(err).Msg("Failed to encode user URLs response")
+		}
+	} else {
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// ShortenURLBatch shortens multiple URLs in one request.
+func (h *Handler) ShortenURLBatch(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		logger.Logger.Error().Err(err).Msg("Failed to read request body")
+		h.sendJSONError(w, "Cannot read body", http.StatusBadRequest)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewBuffer(body))
+	var req []models.BatchShortenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		logger.Logger.Error().Err(err).Str("body", string(body)).Msg("JSON decode failed")
+		h.sendJSONError(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	if len(req) == 0 {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]models.BatchShortenResponse{})
+		return
+	}
+
+	originalURLs := make([]string, 0, len(req))
+	for _, item := range req {
+		if item.OriginalURL == "" {
+			h.sendJSONError(w, "URL cannot be empty", http.StatusBadRequest)
+			return
+		}
+		originalURLs = append(originalURLs, item.OriginalURL)
+	}
+
+	ids, err := h.storage.SaveBatch(originalURLs)
+	if err != nil {
+		h.sendJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := make([]models.BatchShortenResponse, 0, len(req))
+	for i, item := range req {
+		resp = append(resp, models.BatchShortenResponse{
+			CorrelationID: item.CorrelationID,
+			ShortURL:      fmt.Sprintf("%s/%s", h.cfg.BaseURL, ids[i]),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp)
+}
+
+// DeleteUserURLs soft-deletes user's URLs asynchronously.
+func (h *Handler) DeleteUserURLs(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.getUserIDFromContext(r)
+	if !ok || userID == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	var shortIDs []string
+	if err := json.NewDecoder(r.Body).Decode(&shortIDs); err != nil {
+		h.sendJSONError(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if len(shortIDs) == 0 {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	go func() {
+		if storageWithDelete, ok := h.storage.(interface {
+			DeleteUserURLs(userID string, shortIDs []string) error
+		}); ok {
+			if err := storageWithDelete.DeleteUserURLs(userID, shortIDs); err != nil {
+				logger.Logger.Error().Err(err).Str("user_id", userID).Msg("Failed to delete URLs")
+			}
+		}
+	}()
+
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// sendJSONError sends an error response in JSON format.
+func (h *Handler) sendJSONError(w http.ResponseWriter, message string, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(models.ErrorResponse{Error: message})
+}
+
+// sendPlainError sends a plain text error response.
+func (h *Handler) sendPlainError(w http.ResponseWriter, message string, status int) {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(status)
+	w.Write([]byte(message))
+}
+
+
+==== ./internal/handler/README.md ====
+# internal/handler
+
+В этом пакете размещаются обработчики HTTP-запросов. Здесь инкапсулируется так называемая логика представления.
+
+Обычно хэндлеры реализуют:
+- логику обработки запросов
+- валидацию данных
+- вызовы сервисов, в которых содержится бизнес-логика приложения
+- формирование HTTP-ответов
+
+Рекомендуется разбивать хэндлеры по функциональным группам и следовать принципу, где хэндлеры являются адаптерами между HTTP-транспортом и бизнес-логикой приложения.
+
+==== ./internal/handler/handler_test.go ====
+package handler
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/eugegm01-dev/shortener/internal/auth"
+	"github.com/eugegm01-dev/shortener/internal/config"
+	"github.com/eugegm01-dev/shortener/internal/storage"
+	"github.com/go-chi/chi/v5"
+)
+
+func addUserIDToContext(r *http.Request, userID string) *http.Request {
+	ctx := context.WithValue(r.Context(), userIDKey, userID)
+	return r.WithContext(ctx)
+}
+func TestShortenURLJSON(t *testing.T) {
+	// Создаем хранилище и обработчик
+	store := storage.NewMemoryStorage()
+	defer store.Close()
+
+	cfg := &config.Config{
+		ServerAddr: ":8080",
+		BaseURL:    "http://localhost:8080",
+	}
+
+	h := New(store, cfg)
+
+	tests := []struct {
+		name          string
+		requestBody   string
+		expectedCode  int
+		checkResponse func(t *testing.T, resp *httptest.ResponseRecorder)
+	}{
+		{
+			name:         "valid URL",
+			requestBody:  `{"url": "https://practicum.yandex.ru"}`,
+			expectedCode: http.StatusCreated,
+			checkResponse: func(t *testing.T, resp *httptest.ResponseRecorder) {
+				var result map[string]string
+				if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+					t.Fatalf("Failed to decode response: %v", err)
+				}
+
+				if result["result"] == "" {
+					t.Error("Expected non-empty result URL")
+				}
+
+				contentType := resp.Header().Get("Content-Type")
+				if contentType != "application/json" {
+					t.Errorf("Expected Content-Type: application/json, got %s", contentType)
+				}
+			},
+		},
+		{
+			name:         "empty URL",
+			requestBody:  `{"url": ""}`,
+			expectedCode: http.StatusBadRequest,
+			checkResponse: func(t *testing.T, resp *httptest.ResponseRecorder) {
+				var errResp map[string]string
+				if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+					t.Fatalf("Failed to decode error response: %v", err)
+				}
+
+				if errResp["error"] == "" {
+					t.Error("Expected error message in response")
+				}
+			},
+		},
+		{
+			name:         "invalid JSON",
+			requestBody:  `invalid json`,
+			expectedCode: http.StatusBadRequest,
+			checkResponse: func(t *testing.T, resp *httptest.ResponseRecorder) {
+				var errResp map[string]string
+				if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+					t.Fatalf("Failed to decode error response: %v", err)
+				}
+
+				if errResp["error"] == "" {
+					t.Error("Expected error message in response")
+				}
+			},
+		},
+		{
+			name:         "missing URL field",
+			requestBody:  `{}`,
+			expectedCode: http.StatusBadRequest,
+			checkResponse: func(t *testing.T, resp *httptest.ResponseRecorder) {
+				var errResp map[string]string
+				if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+					t.Fatalf("Failed to decode error response: %v", err)
+				}
+
+				if errResp["error"] == "" {
+					t.Error("Expected error message in response")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Создаем запрос
+			req := httptest.NewRequest(http.MethodPost, "/api/shorten", bytes.NewBufferString(tt.requestBody))
+			req.Header.Set("Content-Type", "application/json")
+
+			// Создаем записыватель ответа
+			rr := httptest.NewRecorder()
+
+			// Вызываем обработчик
+			h.ShortenURLJSON(rr, req)
+
+			// Проверяем код статуса
+			if rr.Code != tt.expectedCode {
+				t.Errorf("Expected status code %d, got %d", tt.expectedCode, rr.Code)
+			}
+
+			// Проверяем ответ
+			if tt.checkResponse != nil {
+				tt.checkResponse(t, rr)
+			}
+		})
+	}
+}
+
+func TestShortenURLJSON_DuplicateURL(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	defer store.Close()
+
+	cfg := &config.Config{
+		ServerAddr: ":8080",
+		BaseURL:    "http://localhost:8080",
+	}
+
+	h := New(store, cfg)
+
+	// Первый запрос с одним и тем же URL
+	requestBody := `{"url": "https://example.com"}`
+	req1 := httptest.NewRequest(http.MethodPost, "/api/shorten", bytes.NewBufferString(requestBody))
+	req1.Header.Set("Content-Type", "application/json")
+	rr1 := httptest.NewRecorder()
+	h.ShortenURLJSON(rr1, req1)
+
+	if rr1.Code != http.StatusCreated {
+		t.Fatalf("First request failed with status %d", rr1.Code)
+	}
+
+	var resp1 map[string]string
+	if err := json.NewDecoder(rr1.Body).Decode(&resp1); err != nil {
+		t.Fatalf("Failed to decode first response: %v", err)
+	}
+
+	// Второй запрос с тем же URL
+	req2 := httptest.NewRequest(http.MethodPost, "/api/shorten", bytes.NewBufferString(requestBody))
+	rr2 := httptest.NewRecorder()
+	h.ShortenURLJSON(rr2, req2)
+
+	if rr2.Code != http.StatusConflict { // было http.StatusCreated
+		t.Fatalf("Second request expected status %d, got %d", http.StatusConflict, rr2.Code)
+	}
+
+	var resp2 map[string]string
+	if err := json.NewDecoder(rr2.Body).Decode(&resp2); err != nil {
+		t.Fatalf("Failed to decode second response: %v", err)
+	}
+
+	// Оба должны быть валидными короткими ссылками
+	if resp2["result"] == "" {
+		t.Error("Expected non-empty result URL for second request")
+	}
+}
+
+// Вместо него добавьте простой тест
+
+func TestHandlerPing(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	defer store.Close()
+
+	cfg := &config.Config{
+		ServerAddr: ":8080",
+		BaseURL:    "http://localhost:8080",
+	}
+
+	h := New(store, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	rr := httptest.NewRecorder()
+
+	h.Ping(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status OK, got %d", rr.Code)
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if resp["status"] != "OK" {
+		t.Errorf("Expected status 'OK', got %s", resp["status"])
+	}
+}
+func TestHandler_GetUserURLs(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	cfg := &config.Config{BaseURL: "http://localhost:8080", SecretKey: "test-secret"}
+	h := New(store, cfg)
+
+	userID := "test-user"
+	store.SaveWithUser("https://example.com/1", userID)
+	store.SaveWithUser("https://example.com/2", userID)
+
+	cookie, _ := auth.SignCookie(userID, cfg.SecretKey)
+	req := httptest.NewRequest("GET", "/api/user/urls", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+
+	h.GetUserURLs(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status OK, got %d", rr.Code)
+	}
+
+	var resp []map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(resp) != 2 {
+		t.Errorf("Expected 2 URLs, got %d", len(resp))
+	}
+}
+
+func TestHandler_DeleteUserURLs(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	cfg := &config.Config{BaseURL: "http://localhost:8080", SecretKey: "test-secret"}
+	h := New(store, cfg)
+
+	userID := "test-user"
+	id1, _, _ := store.SaveWithUser("https://example.com/1", userID)
+	id2, _, _ := store.SaveWithUser("https://example.com/2", userID)
+
+	body := bytes.NewBufferString(fmt.Sprintf(`["%s", "%s"]`, id1, id2))
+	req := httptest.NewRequest("DELETE", "/api/user/urls", body)
+	req = addUserIDToContext(req, userID) // ← используем контекст вместо cookie
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.DeleteUserURLs(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Errorf("Expected status Accepted, got %d", rr.Code)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	_, err1 := store.Get(id1)
+	_, err2 := store.Get(id2)
+	if err1 != storage.ErrGone || err2 != storage.ErrGone {
+		t.Error("URLs should be marked as deleted")
+	}
+}
+func TestHandler_RedirectURL(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	cfg := &config.Config{BaseURL: "http://localhost:8080"}
+	h := New(store, cfg)
+
+	url := "https://redirect-test.com"
+	id, _, _ := store.Save(url)
+
+	req := httptest.NewRequest("GET", "/"+id, nil)
+	// Имитируем параметр chi URL
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, &chi.Context{
+		URLParams: chi.RouteParams{Keys: []string{"id"}, Values: []string{id}},
+	}))
+
+	rr := httptest.NewRecorder()
+	h.RedirectURL(rr, req)
+
+	if rr.Code != http.StatusTemporaryRedirect {
+		t.Errorf("Expected 307, got %d", rr.Code)
+	}
+	if loc := rr.Header().Get("Location"); loc != url {
+		t.Errorf("Expected Location %s, got %s", url, loc)
+	}
+}
+
+
+==== ./go.sum ====
+github.com/coreos/go-systemd/v22 v22.5.0/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSVTIJ3seZv2GcEnc=
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/go-chi/chi/v5 v5.0.12 h1:9euLV5sTrTNTRUU9POmDUvfxyj6LAABLUcEWO+JJb4s=
+github.com/go-chi/chi/v5 v5.0.12/go.mod h1:DslCQbL2OYiznFReuXYUmQ2hGd1aDpCnlMNITLSKoi8=
+github.com/godbus/dbus/v5 v5.0.4/go.mod h1:xhWf0FNVPg57R7Z0UbKHbJfkEywrmjJnf7w5xrFpKfA=
+github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
+github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
+github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
+github.com/jackc/pgx/v5 v5.8.0 h1:TYPDoleBBme0xGSAX3/+NujXXtpZn9HBONkQC7IEZSo=
+github.com/jackc/pgx/v5 v5.8.0/go.mod h1:QVeDInX2m9VyzvNeiCJVjCkNFqzsNb43204HshNSZKw=
+github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
+github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
+github.com/mattn/go-colorable v0.1.13 h1:fFA4WZxdEF4tXPZVKMLwD8oUnCTTo08duU7wxecdEvA=
+github.com/mattn/go-colorable v0.1.13/go.mod h1:7S9/ev0klgBDR4GtXTXX8a3vIGJpMovkB8vQcUbaXHg=
+github.com/mattn/go-isatty v0.0.16/go.mod h1:kYGgaQfpe5nmfYZH+SKPsOc2e4SrIfOl2e/yFXSvRLM=
+github.com/mattn/go-isatty v0.0.19 h1:JITubQf0MOLdlGRuRq+jtsDlekdYPia9ZFsB8h/APPA=
+github.com/mattn/go-isatty v0.0.19/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
+github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/rs/xid v1.6.0/go.mod h1:7XoLgs4eV+QndskICGsho+ADou8ySMSjJKDIan90Nz0=
+github.com/rs/zerolog v1.34.0 h1:k43nTLIwcTVQAncfCw4KZ2VY6ukYoZaBPNOE8txlOeY=
+github.com/rs/zerolog v1.34.0/go.mod h1:bJsvje4Z08ROH4Nhs5iH600c3IkWhwp44iRc54W6wYQ=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
+github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
+golang.org/x/sync v0.17.0 h1:l60nONMj9l5drqw6jlhIELNv9I0A4OFgRsG9k2oT9Ug=
+golang.org/x/sync v0.17.0/go.mod h1:9KTHXmSnoGruLpwFjVSX0lNNA75CykiMECbovNTZqGI=
+golang.org/x/sys v0.0.0-20220811171246-fbc7d0a398ab/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.12.0 h1:CM0HF96J0hcLAwsHPJZjfdNzs0gftsLfgKt57wWHJ0o=
+golang.org/x/sys v0.12.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/text v0.29.0 h1:1neNs90w9YzJ9BocxfsQNHKuAT4pkghyXc4nhZ6sJvk=
+golang.org/x/text v0.29.0/go.mod h1:7MhJOA9CD2qZyOKYazxdYMF85OwPdEr9jTtBpO7ydH4=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+
+==== ./benchmark_test.go ====
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/eugegm01-dev/shortener/internal/config"
+	"github.com/eugegm01-dev/shortener/internal/handler"
+	"github.com/eugegm01-dev/shortener/internal/models"
+	"github.com/eugegm01-dev/shortener/internal/storage"
+)
+
+func BenchmarkMemoryStorageSave(b *testing.B) {
+	store := storage.NewMemoryStorage()
+	url := "https://example.com/benchmark"
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = store.Save(url)
+	}
+}
+
+func BenchmarkMemoryStorageGet(b *testing.B) {
+	store := storage.NewMemoryStorage()
+	url := "https://example.com/benchmark"
+	id, _, _ := store.Save(url)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = store.Get(id)
+	}
+}
+
+func BenchmarkShortenURLJSON(b *testing.B) {
+	store := storage.NewMemoryStorage()
+	cfg := &config.Config{BaseURL: "http://localhost:8080"}
+	h := handler.New(store, cfg)
+
+	reqBody := models.ShortenRequest{URL: "https://practicum.yandex.ru"}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/shorten", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		h.ShortenURLJSON(rr, req)
+	}
+}
+
+func BenchmarkRedirectURL(b *testing.B) {
+	store := storage.NewMemoryStorage()
+	cfg := &config.Config{BaseURL: "http://localhost:8080"}
+	h := handler.New(store, cfg)
+
+	url := "https://example.com/redirect"
+	id, _, _ := store.Save(url)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/"+id, nil)
+		rr := httptest.NewRecorder()
+		// Имитируем chi роутер, передавая параметр в контекст
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, &chi.Context{
+			URLParams: chi.RouteParams{Keys: []string{"id"}, Values: []string{id}},
+		}))
+		h.RedirectURL(rr, req)
+	}
+}
+
+func BenchmarkGenerateShortID(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = storage.GenerateShortID()
+	}
+}
+
+
+==== ./README.md ====
+# go-musthave-shortener-tpl
+
+Шаблон репозитория для трека «Сервис сокращения URL».
+
+## Начало работы
+
+1. Склонируйте репозиторий в любую подходящую директорию на вашем компьютере.
+2. В корне репозитория выполните команду `go mod init <name>` (где `<name>` — адрес вашего репозитория на GitHub без префикса `https://`) для создания модуля.
+
+## Обновление шаблона
+
+Чтобы иметь возможность получать обновления автотестов и других частей шаблона, выполните команду:
+
+```
+git remote add -m v2 template https://github.com/Yandex-Practicum/go-musthave-shortener-tpl.git
+```
+
+Для обновления кода автотестов выполните команду:
+
+```
+git fetch template && git checkout template/v2 .github
+```
+
+Затем добавьте полученные изменения в свой репозиторий.
+
+## Запуск автотестов
+
+Для успешного запуска автотестов называйте ветки `iter<number>`, где `<number>` — порядковый номер инкремента. Например, в ветке с названием `iter4` запустятся автотесты для инкрементов с первого по четвёртый.
+
+При мёрже ветки с инкрементом в основную ветку `main` будут запускаться все автотесты.
+
+Подробнее про локальный и автоматический запуск читайте в [README автотестов](https://github.com/Yandex-Practicum/go-autotests).
+
+## Структура проекта
+
+Приведённая в этом репозитории структура проекта является рекомендуемой, но не обязательной.
+
+Это лишь пример организации кода, который поможет вам в реализации сервиса.
+
+При необходимости можно вносить изменения в структуру проекта, использовать любые библиотеки и предпочитаемые структурные паттерны организации кода приложения, например:
+- **DDD** (Domain-Driven Design)
+- **Clean Architecture**
+- **Hexagonal Architecture**
+- **Layered Architecture**
+
+## Профилирование и бенчмарки
+
+Для снятия профиля памяти:
+1. Запустите сервер: `go run ./cmd/shortener`
+2. В другом терминале создайте нагрузку (например, с помощью `hey`):
+   ```bash
+   hey -z 30s -c 50 -m POST -H "Content-Type: application/json" -d '{"url":"https://example.com"}' http://localhost:8080/api/shorten
+
+
+==== ./cmd/shortener/README.md ====
+# cmd/shortener
+
+В данной директории содержится код, который скомпилируется в бинарное приложение.
+
+Рекомендуется помещать только код, необходимый для запуска приложения, но не бизнес-логику.
+
+Название директории должно соответствовать названию приложения.
+
+Директория `cmd/shortener` содержит:
+- точку входа в приложение (функция `main`)
+- инициализацию зависимостей (можно вынести в отдельный пакет `internal/app`)
+- настройку и запуск HTTP-сервера (можно вынести в отдельный пакет `internal/router`)
+- обработку сигналов завершения работы приложения
+
+==== ./cmd/shortener/main.go ====
+package main
+
+import (
+	"context"
+	"net/http"
+	_ "net/http/pprof" // <-- добавлено
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/eugegm01-dev/shortener/internal/config"
+	"github.com/eugegm01-dev/shortener/internal/handler"
+	"github.com/eugegm01-dev/shortener/internal/storage"
+	"github.com/eugegm01-dev/shortener/pkg/logger"
+	"github.com/go-chi/chi/v5"
+)
+
+func main() {
+	logger.Init()
+	cfg := config.LoadConfig()
+
+	// Запускаем pprof сервер в отдельной горутине
+	go func() {
+		logger.Logger.Info().Msg("Starting pprof server on :6060")
+		if err := http.ListenAndServe(":6060", nil); err != nil {
+			logger.Logger.Error().Err(err).Msg("pprof server failed")
+		}
+	}()
+
+	var store storage.Storage
+	var err error
+
+	if cfg.DatabaseDSN != "" {
+		store, err = storage.NewPostgresStorage(cfg.DatabaseDSN)
+		if err != nil {
+			logger.Logger.Fatal().Err(err).Msg("Failed to create postgres storage")
+		}
+	} else if cfg.FileStoragePath != "" {
+		store, err = storage.NewFileStorage(cfg.FileStoragePath)
+		if err != nil {
+			logger.Logger.Fatal().Err(err).Msg("Failed to create file storage")
+		}
+	} else {
+		store = storage.NewMemoryStorage()
+	}
+	defer store.Close()
+
+	h := handler.New(store, cfg)
+
+	router := chi.NewRouter()
+	h.RegisterRoutes(router)
+
+	srv := &http.Server{
+		Addr:    cfg.ServerAddr,
+		Handler: router,
+	}
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		logger.Logger.Info().Msgf("Starting server on %s", cfg.ServerAddr)
+		logger.Logger.Info().Msgf("Base URL: %s", cfg.BaseURL)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Logger.Fatal().Err(err).Msg("Server error")
+		}
+	}()
+
+	<-stop
+	logger.Logger.Info().Msg("Shutting down server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Logger.Fatal().Err(err).Msg("Server shutdown error")
+	}
+
+	logger.Logger.Info().Msg("Server stopped gracefully")
+}
+
+
+==== ./pkg/logger/logger.go ====
+package logger
+
+import (
+	"os"
+
+	"github.com/rs/zerolog"
+)
+
+// Logger глобальный экземпляр логгера
+var Logger zerolog.Logger
+
+// Init инициализирует логгер
+func Init() {
+	// Устанавливаем уровень логирования на Info
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+
+	// Создаем логгер с временными метками
+	Logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
+}
+
+
+==== ./pkg/README.md ====
+# pkg
+
+В данной директории размещаются файлы, которые можно импортировать в других приложениях. 
+
+Например, сюда можно поместить:
+- сгенерированные контракты из proto-файлов
+- публичные библиотеки и утилиты
+- общие модели данных
+- клиентские SDK
+
+Protocol Buffers (Protobuf) будет изучаться дальше по курсу.
+
+==== ./pkg/middleware/logger_test.go ====
+package middleware
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestLoggerMiddleware(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+	mw := LoggerMiddleware(handler)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	rr := httptest.NewRecorder()
+	mw.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d", rr.Code)
+	}
+}
+
+
+==== ./pkg/middleware/gzip_test.go ====
+package middleware
+
+import (
+	"bytes"
+	"compress/gzip"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestDecompressMiddleware(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Write(body)
+	})
+	mw := DecompressMiddleware(handler)
+
+	// Сжимаем тело
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	gz.Write([]byte("hello"))
+	gz.Close()
+
+	req := httptest.NewRequest("POST", "/", &buf)
+	req.Header.Set("Content-Encoding", "gzip")
+	rr := httptest.NewRecorder()
+	mw.ServeHTTP(rr, req)
+
+	if rr.Body.String() != "hello" {
+		t.Errorf("Expected 'hello', got '%s'", rr.Body.String())
+	}
+}
+
+
+==== ./pkg/middleware/logger.go ====
+package middleware
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/eugegm01-dev/shortener/pkg/logger"
+)
+
+// LoggerMiddleware логирует запросы и ответы
+func LoggerMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Запоминаем время начала запроса
+		start := time.Now()
+
+		// Создаем обертку для ответа, чтобы получить код статуса и размер
+		lrw := &loggingResponseWriter{
+			ResponseWriter: w,
+			statusCode:     http.StatusOK,
+		}
+
+		// Выполняем следующий обработчик
+		next.ServeHTTP(lrw, r)
+
+		// Вычисляем время выполнения
+		elapsed := time.Since(start)
+
+		// Логируем информацию о запросе и ответе
+		// Все сообщения на уровне Info
+		logger.Logger.Info().
+			Str("uri", r.RequestURI).
+			Str("method", r.Method).
+			Int("status", lrw.statusCode).
+			Int("size", lrw.size).
+			Dur("duration", elapsed).
+			Msg("processed request")
+	})
+}
+
+// loggingResponseWriter обертка для http.ResponseWriter для перехвата статуса и размера
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+	size       int
+}
+
+// WriteHeader перехватывает код статуса
+func (lrw *loggingResponseWriter) WriteHeader(code int) {
+	lrw.statusCode = code
+	lrw.ResponseWriter.WriteHeader(code)
+}
+
+// Write перехватывает размер ответа
+func (lrw *loggingResponseWriter) Write(b []byte) (int, error) {
+	size, err := lrw.ResponseWriter.Write(b)
+	lrw.size += size
+	return size, err
+}
+
+
+==== ./pkg/middleware/gzip.go ====
+package middleware
+
+import (
+	"compress/gzip"
+	"io"
+	"net/http"
+	"strings"
+)
+
+// DecompressMiddleware decompresses the request body if Content-Encoding: gzip is set.
+func DecompressMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if the client sent a gzipped body
+		if strings.Contains(r.Header.Get("Content-Encoding"), "gzip") {
+			// Create a gzip reader
+			gzReader, err := gzip.NewReader(r.Body)
+			if err != nil {
+				// If the body isn't valid gzip, return 400 Bad Request
+				http.Error(w, "Invalid gzip body", http.StatusBadRequest)
+				return
+			}
+			// Replace the request body with the decompressed reader
+			// Important: we also need to close the gzip reader when done
+			r.Body = &gzipReadCloser{
+				Reader:   gzReader,
+				original: r.Body,
+			}
+		}
+		// Pass the (possibly modified) request to the next handler
+		next.ServeHTTP(w, r)
+	})
+}
+
+// gzipReadCloser ensures that both the gzip.Reader and the original body are closed.
+type gzipReadCloser struct {
+	*gzip.Reader
+	original io.ReadCloser
+}
+
+func (g *gzipReadCloser) Close() error {
+	// Close both the gzip reader and the original body
+	g.Reader.Close()
+	return g.original.Close()
+}
+
+
+==== ./api/README.md ====
+# api
+
+В этой директории принято размещать proto-файлы или файлы в формате OpenAPI/Swagger для описания контракта сервиса.
+
+Protocol Buffers (Protobuf) будет изучаться дальше по курсу.
+
+==== ./docker-compose.yml ====
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: shortener
+      POSTGRES_PASSWORD: shortener
+      POSTGRES_DB: shortener
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shortener"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  shortener:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      SERVER_ADDRESS: ":8080"
+      BASE_URL: "http://localhost:8080"
+      FILE_STORAGE_PATH: ""
+      DATABASE_DSN: "postgres://shortener:shortener@postgres:5432/shortener?sslmode=disable"
+      SECRET_KEY: "my-secret-key-for-jwt-tokens"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+
+==== ./.github/workflows/statictest.yml ====
+name: go vet test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  statictest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download statictest binary
+        uses: robinraju/release-downloader@v1.8
+        with:
+          repository: Yandex-Practicum/go-autotests
+          latest: true
+          fileName: statictest
+          out-file-path: .tools
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup autotest binary
+        run: |
+          chmod -R +x $GITHUB_WORKSPACE/.tools/statictest
+          mv $GITHUB_WORKSPACE/.tools/statictest /usr/local/bin/statictest
+
+      - name: Run statictest
+        run: |
+          go vet -vettool=$(which statictest) ./...
+
+==== ./.github/workflows/shortenertest.yml ====
+name: autotests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+
+  branchtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check branch name
+        run: |
+          if [[ ! $GITHUB_HEAD_REF =~ ^iter[0-9]+$ ]] && [[ ${{ github.ref }} != "refs/heads/main" ]]; then echo "Branch name must match pattern 'iter<number>' or github.ref must be 'refs/heads/main'" && echo "Your branch is $GITHUB_HEAD_REF and github.ref is ${{ github.ref }}" && exit 1; else echo "Your branch is $GITHUB_HEAD_REF and github.ref is ${{ github.ref }}"; fi
+
+  shortenertest:
+    runs-on: ubuntu-latest
+    container: golang:latest
+    needs: branchtest
+
+    env:
+      DATABASE_CONN_STRING: "postgres://postgres:postgres@postgres:5432/praktikum?sslmode=disable"
+
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: praktikum
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Download autotests binaries
+        uses: robinraju/release-downloader@v1.8
+        with:
+          repository: Yandex-Practicum/go-autotests
+          latest: true
+          fileName: "*"
+          out-file-path: .tools
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup autotest binary
+        run: |
+          chmod -R +x $GITHUB_WORKSPACE/.tools
+          mv $GITHUB_WORKSPACE/.tools/shortenertest_v2 /usr/local/bin/shortenertest
+          mv $GITHUB_WORKSPACE/.tools/random /usr/local/bin/random
+          mv $GITHUB_WORKSPACE/.tools/wipedb /usr/local/bin/wipedb
+
+      - name: Setup go deps
+        run: |
+          go install golang.org/x/tools/cmd/goimports@latest
+
+      - name: Build server binary
+        run: |
+          cd cmd/shortener
+          go build -buildvcs=false -o shortener
+
+      - name: "Code increment #1"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter1' ||
+          github.head_ref == 'iter2' ||
+          github.head_ref == 'iter3' ||
+          github.head_ref == 'iter4' ||
+          github.head_ref == 'iter5' ||
+          github.head_ref == 'iter6' ||
+          github.head_ref == 'iter7' ||
+          github.head_ref == 'iter8' ||
+          github.head_ref == 'iter9' ||
+          github.head_ref == 'iter10' ||
+          github.head_ref == 'iter11' ||
+          github.head_ref == 'iter12' ||
+          github.head_ref == 'iter13' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration1$ \
+              -binary-path=cmd/shortener/shortener
+
+      - name: "Code increment #2"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter2' ||
+          github.head_ref == 'iter3' ||
+          github.head_ref == 'iter4' ||
+          github.head_ref == 'iter5' ||
+          github.head_ref == 'iter6' ||
+          github.head_ref == 'iter7' ||
+          github.head_ref == 'iter8' ||
+          github.head_ref == 'iter9' ||
+          github.head_ref == 'iter10' ||
+          github.head_ref == 'iter11' ||
+          github.head_ref == 'iter12' ||
+          github.head_ref == 'iter13' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration2$ -source-path=.
+
+      - name: "Code increment #3"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter3' ||
+          github.head_ref == 'iter4' ||
+          github.head_ref == 'iter5' ||
+          github.head_ref == 'iter6' ||
+          github.head_ref == 'iter7' ||
+          github.head_ref == 'iter8' ||
+          github.head_ref == 'iter9' ||
+          github.head_ref == 'iter10' ||
+          github.head_ref == 'iter11' ||
+          github.head_ref == 'iter12' ||
+          github.head_ref == 'iter13' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration3$ -source-path=.
+
+      - name: "Code increment #4"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter4' ||
+          github.head_ref == 'iter5' ||
+          github.head_ref == 'iter6' ||
+          github.head_ref == 'iter7' ||
+          github.head_ref == 'iter8' ||
+          github.head_ref == 'iter9' ||
+          github.head_ref == 'iter10' ||
+          github.head_ref == 'iter11' ||
+          github.head_ref == 'iter12' ||
+          github.head_ref == 'iter13' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          SERVER_PORT=$(random unused-port)
+          shortenertest -test.v -test.run=^TestIteration4$ \
+              -binary-path=cmd/shortener/shortener \
+              -server-port=$SERVER_PORT
+
+      - name: "Code increment #5"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter5' ||
+          github.head_ref == 'iter6' ||
+          github.head_ref == 'iter7' ||
+          github.head_ref == 'iter8' ||
+          github.head_ref == 'iter9' ||
+          github.head_ref == 'iter10' ||
+          github.head_ref == 'iter11' ||
+          github.head_ref == 'iter12' ||
+          github.head_ref == 'iter13' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          SERVER_PORT=$(random unused-port)
+          shortenertest -test.v -test.run=^TestIteration5$ \
+              -binary-path=cmd/shortener/shortener \
+              -server-port=$SERVER_PORT
+
+      - name: "Code increment #6"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter6' ||
+          github.head_ref == 'iter7' ||
+          github.head_ref == 'iter8' ||
+          github.head_ref == 'iter9' ||
+          github.head_ref == 'iter10' ||
+          github.head_ref == 'iter11' ||
+          github.head_ref == 'iter12' ||
+          github.head_ref == 'iter13' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration6$ \
+              -source-path=.
+
+      - name: "Code increment #7"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter7' ||
+          github.head_ref == 'iter8' ||
+          github.head_ref == 'iter9' ||
+          github.head_ref == 'iter10' ||
+          github.head_ref == 'iter11' ||
+          github.head_ref == 'iter12' ||
+          github.head_ref == 'iter13' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration7$ \
+              -binary-path=cmd/shortener/shortener \
+              -source-path=.
+
+      - name: "Code increment #8"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter8' ||
+          github.head_ref == 'iter9' ||
+          github.head_ref == 'iter10' ||
+          github.head_ref == 'iter11' ||
+          github.head_ref == 'iter12' ||
+          github.head_ref == 'iter13' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration8$ \
+              -binary-path=cmd/shortener/shortener
+
+      - name: "Code increment #9"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter9' ||
+          github.head_ref == 'iter10' ||
+          github.head_ref == 'iter11' ||
+          github.head_ref == 'iter12' ||
+          github.head_ref == 'iter13' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          TEMP_FILE=$(random tempfile)
+          shortenertest -test.v -test.run=^TestIteration9$ \
+              -binary-path=cmd/shortener/shortener \
+              -source-path=. \
+              -file-storage-path=$TEMP_FILE
+
+      - name: "Code increment #10"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter10' ||
+          github.head_ref == 'iter11' ||
+          github.head_ref == 'iter12' ||
+          github.head_ref == 'iter13' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration10$ \
+              -binary-path=cmd/shortener/shortener \
+              -source-path=. \
+              -database-dsn=$DATABASE_CONN_STRING
+          wipedb $DATABASE_CONN_STRING
+
+      - name: "Code increment #11"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter11' ||
+          github.head_ref == 'iter12' ||
+          github.head_ref == 'iter13' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration11$ \
+              -binary-path=cmd/shortener/shortener \
+              -database-dsn=$DATABASE_CONN_STRING
+          wipedb $DATABASE_CONN_STRING
+
+      - name: "Code increment #12"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter12' ||
+          github.head_ref == 'iter13' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration12$ \
+              -binary-path=cmd/shortener/shortener \
+              -database-dsn=$DATABASE_CONN_STRING
+          wipedb $DATABASE_CONN_STRING
+
+      - name: "Code increment #13"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter13' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration13$ \
+              -binary-path=cmd/shortener/shortener \
+              -database-dsn=$DATABASE_CONN_STRING
+          wipedb $DATABASE_CONN_STRING
+
+      - name: "Code increment #14"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter14' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration14$ \
+              -binary-path=cmd/shortener/shortener \
+              -database-dsn=$DATABASE_CONN_STRING
+          wipedb $DATABASE_CONN_STRING
+
+      - name: "Code increment #15"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter15' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration15$ \
+              -binary-path=cmd/shortener/shortener \
+              -database-dsn=$DATABASE_CONN_STRING
+          wipedb $DATABASE_CONN_STRING
+
+      - name: "Code increment #16"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter16' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration16$ \
+              -source-path=. \
+
+      - name: "Code increment #17"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter17' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration17$ \
+              -source-path=. \
+
+      - name: "Code increment #18"
+        if: |
+          github.ref == 'refs/heads/main' ||
+          github.head_ref == 'iter18' ||
+          github.head_ref == 'iter19' ||
+          github.head_ref == 'iter20' ||
+          github.head_ref == 'iter21' ||
+          github.head_ref == 'iter22' ||
+          github.head_ref == 'iter23' ||
+          github.head_ref == 'iter24'
+        run: |
+          shortenertest -test.v -test.run=^TestIteration18$ \
+              -source-path=. \
+
+==== ./coverage.out ====
+mode: set
+github.com/eugegm01-dev/shortener/internal/app/app.go:23.68,41.2 5 0
+github.com/eugegm01-dev/shortener/internal/app/app.go:44.37,46.2 1 0
+github.com/eugegm01-dev/shortener/internal/app/app.go:49.61,51.44 1 0
+github.com/eugegm01-dev/shortener/internal/app/app.go:51.44,53.3 1 0
+github.com/eugegm01-dev/shortener/internal/app/app.go:56.2,56.33 1 0
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:34.28,38.2 1 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:41.38,45.2 3 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:48.39,51.32 3 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:51.32,52.35 1 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:52.35,54.4 1 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:66.58,69.16 2 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:69.16,71.3 1 0
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:72.2,73.43 2 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:77.48,81.16 4 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:81.16,83.3 1 0
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:84.2,86.16 3 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:86.16,88.3 1 0
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:89.2,91.12 3 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:101.48,106.2 1 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:109.48,111.16 2 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:111.16,113.3 1 0
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:114.2,115.16 2 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:115.16,117.3 1 0
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:118.2,121.28 3 1
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:121.28,123.3 1 0
+github.com/eugegm01-dev/shortener/internal/audit/audit.go:124.2,124.12 1 1
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:19.13,24.12 3 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:24.12,26.59 2 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:26.59,28.4 1 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:31.2,34.27 3 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:34.27,36.17 2 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:36.17,38.4 1 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:39.8,39.38 1 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:39.38,41.17 2 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:41.17,43.4 1 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:44.8,46.3 1 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:47.2,62.12 8 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:62.12,65.77 3 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:65.77,67.4 1 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:70.2,76.42 5 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:76.42,78.3 1 0
+github.com/eugegm01-dev/shortener/cmd/shortener/main.go:80.2,80.55 1 0
+github.com/eugegm01-dev/shortener/internal/config/config.go:18.27,39.59 10 1
+github.com/eugegm01-dev/shortener/internal/config/config.go:39.59,41.3 1 1
+github.com/eugegm01-dev/shortener/internal/config/config.go:42.2,42.59 1 1
+github.com/eugegm01-dev/shortener/internal/config/config.go:42.59,44.3 1 1
+github.com/eugegm01-dev/shortener/internal/config/config.go:45.2,45.70 1 1
+github.com/eugegm01-dev/shortener/internal/config/config.go:45.70,47.3 1 0
+github.com/eugegm01-dev/shortener/internal/config/config.go:48.2,48.55 1 1
+github.com/eugegm01-dev/shortener/internal/config/config.go:48.55,50.3 1 0
+github.com/eugegm01-dev/shortener/internal/config/config.go:51.2,51.59 1 1
+github.com/eugegm01-dev/shortener/internal/config/config.go:51.59,53.3 1 0
+github.com/eugegm01-dev/shortener/internal/config/config.go:54.2,54.65 1 1
+github.com/eugegm01-dev/shortener/internal/config/config.go:54.65,56.3 1 0
+github.com/eugegm01-dev/shortener/internal/config/config.go:57.2,57.62 1 1
+github.com/eugegm01-dev/shortener/internal/config/config.go:57.62,59.3 1 0
+github.com/eugegm01-dev/shortener/internal/config/config.go:61.2,61.12 1 1
+github.com/eugegm01-dev/shortener/internal/auth/auth.go:15.65,16.21 1 1
+github.com/eugegm01-dev/shortener/internal/auth/auth.go:16.21,18.3 1 1
+github.com/eugegm01-dev/shortener/internal/auth/auth.go:21.2,38.8 6 1
+github.com/eugegm01-dev/shortener/internal/auth/auth.go:42.70,44.16 2 1
+github.com/eugegm01-dev/shortener/internal/auth/auth.go:44.16,46.3 1 0
+github.com/eugegm01-dev/shortener/internal/auth/auth.go:48.2,49.21 2 1
+github.com/eugegm01-dev/shortener/internal/auth/auth.go:49.21,51.3 1 0
+github.com/eugegm01-dev/shortener/internal/auth/auth.go:53.2,60.57 5 1
+github.com/eugegm01-dev/shortener/internal/auth/auth.go:60.57,62.3 1 1
+github.com/eugegm01-dev/shortener/internal/auth/auth.go:65.2,66.16 2 1
+github.com/eugegm01-dev/shortener/internal/auth/auth.go:66.16,68.3 1 0
+github.com/eugegm01-dev/shortener/internal/auth/auth.go:70.2,70.28 1 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:36.64,44.25 2 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:44.25,46.17 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:46.17,48.4 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:48.9,51.4 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:55.2,55.24 1 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:55.24,59.3 3 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:61.2,61.10 1 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:65.48,79.2 12 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:82.66,83.71 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:83.71,85.17 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:85.17,88.18 3 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:88.18,90.5 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:90.10,92.5 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:94.3,95.40 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:100.30,104.2 3 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:107.72,110.2 2 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:113.64,114.41 1 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:114.41,118.3 3 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:119.2,121.62 3 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:125.70,127.16 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:127.16,130.3 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:131.2,134.23 3 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:134.23,137.3 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:139.2,145.25 4 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:145.25,147.3 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:147.8,149.3 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:151.2,151.16 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:151.16,154.3 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:156.2,158.14 3 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:158.14,160.3 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:160.8,162.3 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:163.2,171.4 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:175.74,177.61 2 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:177.61,180.3 2 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:181.2,183.19 2 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:183.19,186.3 2 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:188.2,195.25 5 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:195.25,197.3 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:197.8,199.3 1 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:201.2,201.16 1 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:201.16,204.3 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:206.2,210.14 3 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:210.14,212.3 1 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:212.8,214.3 1 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:215.2,215.56 1 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:215.56,217.3 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:220.2,225.4 1 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:229.71,231.14 2 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:231.14,234.3 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:236.2,237.16 2 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:237.16,238.38 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:238.38,241.4 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:242.3,243.9 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:246.2,255.4 4 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:259.71,261.16 2 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:261.16,262.63 1 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:262.63,265.4 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:266.3,267.9 2 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:270.2,272.9 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:272.9,274.17 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:274.17,278.4 3 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:279.3,279.21 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:279.21,282.4 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:283.3,284.28 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:284.28,290.4 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:291.3,293.61 3 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:293.61,295.4 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:296.8,298.3 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:302.75,304.16 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:304.16,308.3 3 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:309.2,311.61 3 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:311.61,315.3 3 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:316.2,318.19 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:318.19,322.3 3 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:324.2,325.27 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:325.27,326.29 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:326.29,329.4 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:330.3,330.56 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:333.2,334.16 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:334.16,337.3 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:339.2,340.27 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:340.27,345.3 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:347.2,349.33 3 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:353.74,355.25 2 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:355.25,358.3 2 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:360.2,361.66 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:361.66,364.3 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:366.2,366.24 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:366.24,369.3 2 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:371.2,371.12 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:371.12,374.10 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:374.10,375.77 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:375.77,377.5 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:381.2,381.36 1 0
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:385.84,389.2 3 1
+github.com/eugegm01-dev/shortener/internal/handler/handler.go:392.85,396.2 3 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:20.63,22.16 2 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:22.16,24.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:26.2,27.43 2 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:27.43,29.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:30.2,30.16 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:34.49,41.29 2 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:41.29,43.17 2 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:43.17,45.4 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:46.3,46.55 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:46.55,48.4 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:50.2,50.12 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:52.66,54.2 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:56.82,57.15 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:57.15,59.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:61.2,73.26 5 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:73.26,79.17 2 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:79.17,81.4 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:82.3,82.24 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:84.2,84.16 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:84.16,86.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:87.2,87.22 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:90.58,96.16 4 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:96.16,97.36 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:97.36,99.4 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:100.3,100.17 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:102.2,102.15 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:102.15,104.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:105.2,105.25 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:109.78,116.16 2 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:116.16,118.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:119.2,122.18 3 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:122.18,124.56 2 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:124.56,126.4 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:127.3,130.5 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:132.2,132.27 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:135.58,137.16 2 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:137.16,139.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:140.2,143.18 3 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:143.18,145.50 2 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:145.50,147.4 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:148.3,148.25 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:151.2,151.34 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:151.34,153.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:154.2,154.18 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:157.40,162.45 4 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:162.45,164.17 2 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:164.17,166.4 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:167.3,168.37 2 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:170.2,170.61 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:173.41,175.2 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:177.70,179.2 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:181.93,182.20 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:182.20,184.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:186.2,187.16 2 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:187.16,189.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:190.2,193.27 3 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:193.27,194.16 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:194.16,196.4 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:198.3,208.17 4 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:208.17,210.4 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:211.3,211.32 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:214.2,214.35 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:214.35,216.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:217.2,217.17 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:219.82,220.24 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:220.24,222.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/postgres.go:223.2,225.12 3 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:25.26,27.3 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:31.31,35.40 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:35.40,38.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:40.2,45.24 6 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:71.40,78.2 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:81.64,83.2 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:86.80,87.15 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:87.15,89.3 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:91.2,95.34 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:95.34,97.19 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:97.19,98.33 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:98.33,100.5 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:101.4,101.33 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:103.3,103.24 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:107.2,108.6 2 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:108.6,109.40 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:109.40,110.9 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:112.3,112.25 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:116.2,120.18 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:120.18,121.32 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:121.32,123.4 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:124.3,124.32 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:127.2,127.22 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:131.56,134.19 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:134.19,136.3 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:137.2,138.13 2 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:138.13,140.3 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:141.2,141.17 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:145.76,149.13 4 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:149.13,151.3 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:152.2,153.25 2 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:153.25,154.20 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:154.20,155.12 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:157.3,157.41 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:157.41,162.4 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:164.2,164.18 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:168.56,173.31 4 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:173.31,178.3 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:179.2,179.18 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:183.38,185.2 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:188.39,190.2 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:193.68,195.2 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:198.91,199.20 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:199.20,201.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:203.2,207.27 4 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:207.27,208.16 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:208.16,210.4 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:213.3,213.35 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:213.35,216.20 2 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:216.20,217.34 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:217.34,219.6 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:220.5,220.34 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:222.4,222.12 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:226.3,227.7 2 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:227.7,228.41 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:228.41,229.10 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:231.4,231.26 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:235.3,239.19 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:239.19,240.33 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:240.33,242.5 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:243.4,243.33 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:246.3,246.24 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:249.2,249.17 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:253.80,256.30 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:256.30,258.64 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:258.64,260.4 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage.go:262.2,262.12 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:28.60,36.34 2 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:36.34,38.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:39.2,39.16 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:42.37,44.16 2 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:44.16,45.25 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:45.25,47.4 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:48.3,48.13 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:50.2,53.63 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:53.63,55.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:57.2,60.30 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:60.30,64.25 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:64.25,66.4 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:68.3,72.23 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:72.23,73.38 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:73.38,75.5 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:76.4,76.38 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:79.2,79.12 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:82.37,84.40 2 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:84.40,87.40 2 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:87.40,88.18 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:88.18,90.10 2 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:94.3,100.5 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:103.2,104.16 2 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:104.16,106.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:107.2,111.32 4 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:114.63,116.2 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:118.79,119.15 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:119.15,121.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:123.2,127.35 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:127.35,129.19 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:129.19,130.34 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:130.34,132.5 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:133.4,135.36 2 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:135.36,137.5 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:139.3,139.24 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:143.2,144.6 2 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:144.6,145.41 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:145.41,146.9 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:148.3,148.25 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:152.2,156.18 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:156.18,157.33 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:157.33,159.4 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:160.3,160.33 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:164.2,164.34 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:164.34,168.49 3 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:168.49,170.4 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:171.3,171.24 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:174.2,174.22 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:177.55,180.20 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:180.20,182.3 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:183.2,184.9 2 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:184.9,186.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:187.2,187.17 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:191.75,196.33 4 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:196.33,198.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:200.2,201.25 2 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:201.25,202.42 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:202.42,207.4 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:210.2,210.18 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:213.55,218.32 4 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:218.32,220.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:221.2,221.18 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:224.37,226.2 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:228.38,230.2 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:232.67,234.2 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:236.90,237.20 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:237.20,239.3 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:241.2,247.27 5 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:247.27,248.16 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:248.16,250.4 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:253.3,253.36 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:253.36,256.20 2 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:256.20,257.35 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:257.35,259.6 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:260.5,260.35 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:262.4,262.12 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:266.3,267.7 2 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:267.7,268.42 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:268.42,269.10 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:271.4,271.26 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:275.3,280.19 4 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:280.19,281.34 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:281.34,283.5 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:284.4,284.34 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:287.3,287.24 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:291.2,291.34 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:291.34,293.30 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:293.30,297.50 4 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:297.50,299.5 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:301.3,301.18 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:304.2,304.17 1 0
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:307.79,310.30 3 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:310.30,311.66 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:311.66,313.4 1 1
+github.com/eugegm01-dev/shortener/internal/storage/storage_file.go:315.2,315.18 1 1
+github.com/eugegm01-dev/shortener/pkg/logger/logger.go:13.13,19.2 2 0
+github.com/eugegm01-dev/shortener/pkg/middleware/gzip.go:11.59,12.71 1 1
+github.com/eugegm01-dev/shortener/pkg/middleware/gzip.go:12.71,14.65 1 1
+github.com/eugegm01-dev/shortener/pkg/middleware/gzip.go:14.65,17.18 2 1
+github.com/eugegm01-dev/shortener/pkg/middleware/gzip.go:17.18,21.5 2 0
+github.com/eugegm01-dev/shortener/pkg/middleware/gzip.go:24.4,27.5 1 1
+github.com/eugegm01-dev/shortener/pkg/middleware/gzip.go:30.3,30.23 1 1
+github.com/eugegm01-dev/shortener/pkg/middleware/gzip.go:40.40,44.2 2 0
+github.com/eugegm01-dev/shortener/pkg/middleware/logger.go:11.55,12.71 1 1
+github.com/eugegm01-dev/shortener/pkg/middleware/logger.go:12.71,37.3 5 1
+github.com/eugegm01-dev/shortener/pkg/middleware/logger.go:48.57,51.2 2 1
+github.com/eugegm01-dev/shortener/pkg/middleware/logger.go:54.64,58.2 3 1
+
+
+==== ./go.mod ====
+module github.com/eugegm01-dev/shortener
+
+go 1.24.0
+
+require (
+	github.com/go-chi/chi/v5 v5.0.12
+	github.com/jackc/pgx/v5 v5.8.0
+	github.com/rs/zerolog v1.34.0
+)
+
+require (
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-isatty v0.0.19 // indirect
+	golang.org/x/sync v0.17.0 // indirect
+	golang.org/x/sys v0.12.0 // indirect
+	golang.org/x/text v0.29.0 // indirect
+)
+
+
+==== ./context.txt ====
+
+==== ./migrations/README.md ====
+# migrations
+
+В данной директории содержатся файлы миграций базы данных.
+
+Миграции базы данных — это скрипты, которые позволяют:
+
+- версионировать изменения схемы базы данных
+- применять изменения в правильном порядке
+- откатывать изменения при необходимости
+
+Тема миграций будет подробно изучаться дальше по курсу.
+
+
+==== ./migrations/0002_add_unique_original_url.up.sql ====
+ALTER TABLE urls
+ADD CONSTRAINT unique_original_url UNIQUE (original_url);
+
+==== ./migrations/0003_add_user_id_to_urls.up.sql ====
+ALTER TABLE urls
+ADD COLUMN user_id VARCHAR(50);
+
+CREATE INDEX idx_user_id ON urls(user_id);
+
+==== ./migrations/0004_add_is_deleted_to_urls.up.sql ====
+ALTER TABLE urls ADD COLUMN is_deleted BOOLEAN DEFAULT FALSE;
+CREATE INDEX idx_is_deleted ON urls(is_deleted);
+
+==== ./migrations/0001_create_urls_table.up.sql ====
+CREATE TABLE IF NOT EXISTS urls (
+    id VARCHAR(10) PRIMARY KEY,
+    original_url TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

@@ -9,10 +9,15 @@ on:
 jobs:
   statictest:
     runs-on: ubuntu-latest
-    container: golang:1.24
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
 
       - name: Download statictest binary
         uses: robinraju/release-downloader@v1.8

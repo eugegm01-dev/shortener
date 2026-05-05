@@ -42,3 +42,11 @@ git fetch template && git checkout template/v2 .github
 - **Clean Architecture**
 - **Hexagonal Architecture**
 - **Layered Architecture**
+
+## Профилирование и бенчмарки
+
+Для снятия профиля памяти:
+1. Запустите сервер: `go run ./cmd/shortener`
+2. В другом терминале создайте нагрузку (например, с помощью `hey`):
+   ```bash
+   hey -z 30s -c 50 -m POST -H "Content-Type: application/json" -d '{"url":"https://example.com"}' http://localhost:8080/api/shorten

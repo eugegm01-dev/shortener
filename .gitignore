@@ -21,3 +21,24 @@ vendor/
 # IDEs directories
 .idea
 .vscode
+go-musthave-shortener-trainer/
+*.exe
+*.log
+
+# Binaries
+bin/
+shortener
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Environment variables
+.env
