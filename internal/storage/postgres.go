@@ -17,6 +17,8 @@ type PostgresStorage struct {
 	db *sql.DB
 }
 
+// NewPostgresStorage creates a PostgreSQL storage using the provided DSN.
+// It automatically runs the required migrations.
 func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {

@@ -1,3 +1,4 @@
+// Package handler implements HTTP request handlers for the URL shortener service.
 package handler
 
 import (
@@ -27,12 +28,19 @@ type contextKey string
 
 const userIDKey contextKey = "userID"
 
+// UserIDKey is the exported context key for the authenticated user ID.
+// It is used in tests and can be used by external packages to read the user ID from the request context.
+const UserIDKey = userIDKey
+
+// Handler holds the HTTP handlers and their dependencies.
 type Handler struct {
 	storage      storage.Storage
 	cfg          *config.Config
 	auditSubject *audit.Subject
 }
 
+// New creates a new Handler with the given storage and configuration.
+// It also initialises audit observers based on config.AuditFile and config.AuditURL.
 func New(storage storage.Storage, cfg *config.Config) *Handler {
 	h := &Handler{
 		storage:      storage,
@@ -61,7 +69,8 @@ func New(storage storage.Storage, cfg *config.Config) *Handler {
 	return h
 }
 
-// RegisterRoutes registers all HTTP routes.
+// RegisterRoutes registers all HTTP routes on the provided router.
+// It attaches middlewares for decompression, logging, panic recovery, compression and authentication.
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Use(mw.DecompressMiddleware)
 	r.Use(mw.LoggerMiddleware)
@@ -109,7 +118,7 @@ func (h *Handler) getUserIDFromContext(r *http.Request) (string, bool) {
 	return userID, ok
 }
 
-// Ping checks storage health.
+// Ping responds with a JSON status "OK" if the storage is reachable.
 func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	if err := h.storage.Ping(); err != nil {
 		logger.Logger.Error().Err(err).Msg("Ping failed")
@@ -121,7 +130,8 @@ func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "OK"})
 }
 
-// ShortenURL handles plain text shortening.
+// ShortenURL handles a plain‑text POST request and returns the shortened URL.
+// If the URL already exists, it returns HTTP 409 Conflict.
 func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -171,7 +181,9 @@ func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ShortenURLJSON handles JSON shortening.
+// ShortenURLJSON handles a JSON POST request and returns the shortened URL.
+// Request body: {"url":"http://..."}
+// Response: {"result":"http://short/abc123"}
 func (h *Handler) ShortenURLJSON(w http.ResponseWriter, r *http.Request) {
 	var req models.ShortenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

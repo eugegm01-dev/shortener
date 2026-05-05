@@ -1,3 +1,4 @@
+// Package storage provides URL storage backends with user scoping, batch saving and soft deletion.
 package storage
 
 import (
@@ -17,7 +18,7 @@ var (
 	errGone     = fmt.Errorf("url has been deleted")
 )
 
-// ErrGone экспортируемая ошибка для хендлеров
+// ErrGone is returned by Get when the requested URL has been deleted.
 var ErrGone = errGone
 
 // bufPool для генерации случайных байт
@@ -27,7 +28,8 @@ var bufPool = sync.Pool{
 	},
 }
 
-// GenerateShortID генерирует случайный короткий идентификатор.
+// GenerateShortID returns a random 8‑character identifier using
+// URL‑safe base64 encoding. It uses a sync.Pool to reduce allocations.
 func GenerateShortID() string {
 	b := bufPool.Get().([]byte)
 	defer bufPool.Put(b)
@@ -45,16 +47,36 @@ func GenerateShortID() string {
 	return sb.String()[:8]
 }
 
-// Storage определяет интерфейс хранилища URL
+// Storage is the interface that all URL storage backends must implement.
 type Storage interface {
+
+	// Save stores an original URL and returns a unique identifier.
+	// The boolean indicates whether the URL was newly created.
 	Save(url string) (id string, created bool, err error)
+
+	// SaveWithUser stores an original URL associated with a user.
 	SaveWithUser(url, userID string) (id string, created bool, err error)
+
+	// Get retrieves the original URL by its short identifier.
+	// It returns ErrGone if the URL has been deleted.
 	Get(id string) (string, error)
+
+	// GetByUser returns all non‑deleted URLs belonging to a user.
 	GetByUser(userID string) ([]models.UserURL, error)
+
+	// GetAll returns every stored URL (including deleted ones).
 	GetAll() ([]models.URL, error)
+
+	// Ping checks the health of the storage.
 	Ping() error
+
+	// Close releases any resources held by the storage.
 	Close() error
+
+	// SaveBatch stores multiple URLs atomically and returns their IDs.
 	SaveBatch(urls []string) ([]string, error)
+
+	// DeleteUserURLs marks the given short IDs as deleted for a user.
 	DeleteUserURLs(userID string, shortIDs []string) error
 }
 

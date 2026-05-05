@@ -1,3 +1,4 @@
+// Package logger provides a global zerolog logger with timestamp and info level.
 package logger
 
 import (
@@ -6,14 +7,12 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// Logger глобальный экземпляр логгера
+// Logger is the global logger instance used throughout the application.
 var Logger zerolog.Logger
 
-// Init инициализирует логгер
+// Init initialises the global logger with human‑readable timestamps
+// and sets the global logging level to Info.
 func Init() {
-	// Устанавливаем уровень логирования на Info
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-
-	// Создаем логгер с временными метками
 	Logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
 }

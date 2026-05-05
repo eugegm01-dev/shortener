@@ -1,3 +1,4 @@
+// Package auth provides cookie‑based authentication using HMAC‑signed tokens.
 package auth
 
 import (
@@ -11,7 +12,8 @@ import (
 
 const cookieName = "auth_token"
 
-// SignCookie создаёт подписанную куку: base64(userID) + "." + base64(HMAC)
+// SignCookie creates a signed cookie containing the user ID.
+// The cookie value is base64(userID) + "." + base64(HMAC).
 func SignCookie(userID, secretKey string) (*http.Cookie, error) {
 	if secretKey == "" {
 		return nil, errors.New("secret key is empty")
@@ -38,7 +40,8 @@ func SignCookie(userID, secretKey string) (*http.Cookie, error) {
 	}, nil
 }
 
-// VerifyCookie проверяет подпись и возвращает user_id
+// VerifyCookie extracts and verifies the user ID from the request's cookie.
+// It returns the user ID if the signature is valid, otherwise an error.
 func VerifyCookie(r *http.Request, secretKey string) (string, error) {
 	cookie, err := r.Cookie(cookieName)
 	if err != nil {

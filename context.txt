@@ -2566,8 +2566,9 @@ func TestHandler_GetUserURLs(t *testing.T) {
 	store.SaveWithUser("https://example.com/1", userID)
 	store.SaveWithUser("https://example.com/2", userID)
 
+	cookie, _ := auth.SignCookie(userID, cfg.SecretKey)
 	req := httptest.NewRequest("GET", "/api/user/urls", nil)
-	req = addUserIDToContext(req, userID)
+	req.AddCookie(cookie)
 	rr := httptest.NewRecorder()
 
 	h.GetUserURLs(rr, req)
@@ -2595,9 +2596,8 @@ func TestHandler_DeleteUserURLs(t *testing.T) {
 	id2, _, _ := store.SaveWithUser("https://example.com/2", userID)
 
 	body := bytes.NewBufferString(fmt.Sprintf(`["%s", "%s"]`, id1, id2))
-	cookie, _ := auth.SignCookie(userID, cfg.SecretKey)
 	req := httptest.NewRequest("DELETE", "/api/user/urls", body)
-	req.AddCookie(cookie)
+	req = addUserIDToContext(req, userID) // ← используем контекст вместо cookie
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 

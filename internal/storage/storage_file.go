@@ -25,6 +25,7 @@ type FileStorage struct {
 	filePath string
 }
 
+// NewFileStorage creates a file‑based storage that persists data to the given JSON file.
 func NewFileStorage(filePath string) (*FileStorage, error) {
 	fs := &FileStorage{
 		store:    make(map[string]string),

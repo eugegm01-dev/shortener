@@ -1,3 +1,4 @@
+// Package config provides configuration loading from flags and environment variables.
 package config
 
 import (
@@ -5,16 +6,21 @@ import (
 	"os"
 )
 
+// Config holds all configuration parameters for the application.
 type Config struct {
-	ServerAddr      string
-	BaseURL         string
-	FileStoragePath string
-	DatabaseDSN     string
-	SecretKey       string
-	AuditFile       string // new
-	AuditURL        string // new
+	ServerAddr      string // HTTP server address, e.g. ":8080"
+	BaseURL         string // Public base URL for shortened links
+	FileStoragePath string // Path to JSON file for file‑based storage (empty = disabled)
+	DatabaseDSN     string // PostgreSQL DSN (empty = disabled)
+	SecretKey       string // Secret key for cookie signing
+	AuditFile       string // Path to audit log file (empty = disabled)
+	AuditURL        string // URL of remote audit receiver (empty = disabled)
 }
 
+// LoadConfig reads configuration from command line flags and environment variables.
+// Environment variables override flags:
+//
+//	SERVER_ADDRESS, BASE_URL, FILE_STORAGE_PATH, DATABASE_DSN, SECRET_KEY, AUDIT_FILE, AUDIT_URL.
 func LoadConfig() *Config {
 	cfg := &Config{
 		ServerAddr:      ":8080",

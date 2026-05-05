@@ -1,40 +1,41 @@
+// Package models defines data transfer objects (DTOs) for the URL shortener API.
 package models
 
-// URL представляет собой модель данных для хранения ссылок
+// URL represents a stored URL mapping.
 type URL struct {
-	ID  string `json:"id"`
-	URL string `json:"url"`
+	ID  string `json:"id"`  // Short identifier (key)
+	URL string `json:"url"` // Original URL
 }
 
-// ShortenRequest представляет запрос на сокращение URL
+// ShortenRequest is the JSON request body for POST /api/shorten.
 type ShortenRequest struct {
-	URL string `json:"url"`
+	URL string `json:"url"` // The original URL to shorten
 }
 
-// ShortenResponse представляет ответ на запрос сокращения URL
+// ShortenResponse is the JSON response for POST /api/shorten.
 type ShortenResponse struct {
-	Result string `json:"result"`
+	Result string `json:"result"` // The shortened URL
 }
 
-// ErrorResponse представляет структуру для ошибок API
+// ErrorResponse is the standard error response format for API errors.
 type ErrorResponse struct {
-	Error string `json:"error"`
+	Error string `json:"error"` // Human‑readable error message
 }
 
-// BatchShortenRequest элемент запроса на пакетное сокращение
+// BatchShortenRequest represents a single item in a batch shortening request.
 type BatchShortenRequest struct {
-	CorrelationID string `json:"correlation_id"`
-	OriginalURL   string `json:"original_url"`
+	CorrelationID string `json:"correlation_id"` // Client‑supplied ID to match response items
+	OriginalURL   string `json:"original_url"`   // The URL to shorten
 }
 
-// BatchShortenResponse элемент ответа на пакетное сокращение
+// BatchShortenResponse represents a single item in a batch shortening response.
 type BatchShortenResponse struct {
-	CorrelationID string `json:"correlation_id"`
-	ShortURL      string `json:"short_url"`
+	CorrelationID string `json:"correlation_id"` // Same as in the request
+	ShortURL      string `json:"short_url"`      // The shortened URL
 }
 
-// UserURL — ссылка с привязкой к пользователю
+// UserURL represents a user's short‑to‑original URL mapping.
 type UserURL struct {
-	ShortURL    string `json:"short_url"`
-	OriginalURL string `json:"original_url"`
+	ShortURL    string `json:"short_url"`    // The shortened URL
+	OriginalURL string `json:"original_url"` // The original URL
 }

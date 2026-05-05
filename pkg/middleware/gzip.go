@@ -1,3 +1,4 @@
+// Package middleware provides HTTP middleware for logging, decompression, etc.
 package middleware
 
 import (
@@ -7,38 +8,34 @@ import (
 	"strings"
 )
 
-// DecompressMiddleware decompresses the request body if Content-Encoding: gzip is set.
+// DecompressMiddleware decompresses the request body if the
+// Content-Encoding header is "gzip". If the body is not a valid
+// gzip stream, it returns HTTP 400 Bad Request.
 func DecompressMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check if the client sent a gzipped body
 		if strings.Contains(r.Header.Get("Content-Encoding"), "gzip") {
-			// Create a gzip reader
 			gzReader, err := gzip.NewReader(r.Body)
 			if err != nil {
-				// If the body isn't valid gzip, return 400 Bad Request
 				http.Error(w, "Invalid gzip body", http.StatusBadRequest)
 				return
 			}
-			// Replace the request body with the decompressed reader
-			// Important: we also need to close the gzip reader when done
 			r.Body = &gzipReadCloser{
 				Reader:   gzReader,
 				original: r.Body,
 			}
 		}
-		// Pass the (possibly modified) request to the next handler
 		next.ServeHTTP(w, r)
 	})
 }
 
-// gzipReadCloser ensures that both the gzip.Reader and the original body are closed.
+// gzipReadCloser wraps a gzip.Reader and closes both the reader and the original body.
 type gzipReadCloser struct {
 	*gzip.Reader
 	original io.ReadCloser
 }
 
+// Close closes the gzip reader and the original request body.
 func (g *gzipReadCloser) Close() error {
-	// Close both the gzip reader and the original body
 	g.Reader.Close()
 	return g.original.Close()
 }
