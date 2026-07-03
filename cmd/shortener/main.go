@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
-	_ "net/http/pprof" // <-- добавлено
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,7 +11,9 @@ import (
 
 	"github.com/eugegm01-dev/shortener/internal/config"
 	"github.com/eugegm01-dev/shortener/internal/handler"
+	"github.com/eugegm01-dev/shortener/internal/service"
 	"github.com/eugegm01-dev/shortener/internal/storage"
+	"github.com/eugegm01-dev/shortener/migrations"
 	"github.com/eugegm01-dev/shortener/pkg/logger"
 	"github.com/go-chi/chi/v5"
 )
@@ -20,7 +22,6 @@ func main() {
 	logger.Init()
 	cfg := config.LoadConfig()
 
-	// Запускаем pprof сервер в отдельной горутине
 	go func() {
 		logger.Logger.Info().Msg("Starting pprof server on :6060")
 		if err := http.ListenAndServe(":6060", nil); err != nil {
@@ -32,7 +33,8 @@ func main() {
 	var err error
 
 	if cfg.DatabaseDSN != "" {
-		store, err = storage.NewPostgresStorage(cfg.DatabaseDSN)
+		// Передаём встроенные миграции
+		store, err = storage.NewPostgresStorage(cfg.DatabaseDSN, migrations.FS)
 		if err != nil {
 			logger.Logger.Fatal().Err(err).Msg("Failed to create postgres storage")
 		}
@@ -44,10 +46,11 @@ func main() {
 	} else {
 		store = storage.NewMemoryStorage()
 	}
-	defer store.Close()
 
-	h := handler.New(store, cfg)
+	// Инициализация фонового воркера (Fan-In Batch Deleter)
+	deleter := service.NewDeleter(store, 100, 5*time.Second)
 
+	h := handler.New(store, cfg, deleter)
 	router := chi.NewRouter()
 	h.RegisterRoutes(router)
 
@@ -61,7 +64,6 @@ func main() {
 
 	go func() {
 		logger.Logger.Info().Msgf("Starting server on %s", cfg.ServerAddr)
-		logger.Logger.Info().Msgf("Base URL: %s", cfg.BaseURL)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Logger.Fatal().Err(err).Msg("Server error")
 		}
@@ -69,12 +71,21 @@ func main() {
 
 	<-stop
 	logger.Logger.Info().Msg("Shutting down server...")
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// 1. Останавливаем приём новых HTTP-запросов
 	if err := srv.Shutdown(ctx); err != nil {
-		logger.Logger.Fatal().Err(err).Msg("Server shutdown error")
+		logger.Logger.Error().Err(err).Msg("Server shutdown error")
+	}
+
+	// 2. Flush-им фоновые задачи (гарантированная доставка удалений в БД)
+	logger.Logger.Info().Msg("Flushing background deleter...")
+	deleter.Close()
+
+	// 3. Закрываем соединение с БД / Файлом
+	if err := store.Close(); err != nil {
+		logger.Logger.Error().Err(err).Msg("Storage close error")
 	}
 
 	logger.Logger.Info().Msg("Server stopped gracefully")

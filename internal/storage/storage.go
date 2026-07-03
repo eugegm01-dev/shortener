@@ -76,6 +76,8 @@ type Storage interface {
 	// SaveBatch stores multiple URLs atomically and returns their IDs.
 	SaveBatch(urls []string) ([]string, error)
 
+	SaveBatchWithUser(urls []string, userID string) ([]string, error)
+
 	// DeleteUserURLs marks the given short IDs as deleted for a user.
 	DeleteUserURLs(userID string, shortIDs []string) error
 }
