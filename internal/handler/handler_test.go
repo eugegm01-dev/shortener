@@ -12,6 +12,7 @@ import (
 
 	"github.com/eugegm01-dev/shortener/internal/auth"
 	"github.com/eugegm01-dev/shortener/internal/config"
+	"github.com/eugegm01-dev/shortener/internal/models"
 	"github.com/eugegm01-dev/shortener/internal/service"
 	"github.com/eugegm01-dev/shortener/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -205,5 +206,35 @@ func TestHandler_RedirectURL(t *testing.T) {
 	}
 	if loc := rr.Header().Get("Location"); loc != url {
 		t.Errorf("Expected Location %s, got %s", url, loc)
+	}
+}
+func TestShortenURLBatch(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	defer store.Close()
+	cfg := &config.Config{ServerAddr: ":8080", BaseURL: "http://localhost:8080"}
+	deleter := service.NewDeleter(store, 100, 5*time.Second)
+	defer deleter.Close()
+	h := New(store, cfg, deleter)
+
+	reqBody := `[{"correlation_id":"1","original_url":"https://a.com"},{"correlation_id":"2","original_url":"https://b.com"}]`
+	req := httptest.NewRequest(http.MethodPost, "/api/shorten/batch", bytes.NewBufferString(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Проверяем ветку с сохранением от имени пользователя
+	req = addUserIDToContext(req, "test-user")
+
+	rr := httptest.NewRecorder()
+	h.ShortenURLBatch(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Errorf("Expected status Created, got %d", rr.Code)
+	}
+
+	var resp []models.BatchShortenResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(resp) != 2 {
+		t.Errorf("Expected 2 items in response, got %d", len(resp))
 	}
 }
