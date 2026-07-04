@@ -1,44 +1,32 @@
-# Binaries for programs and plugins
+# Binaries
 *.exe
-*.exe~
 *.dll
 *.so
 *.dylib
-
-# Test binary, built with `go test -c`
 *.test
-
-# Output of the go coverage tool, specifically when used with LiteIDE
-*.out
-
-# Binaries
+shortener
+staticlint
 cmd/shortener/main
 cmd/shortener/shortener
-
-# Dependency directories (remove the comment below to include it)
-vendor/
-
-# IDEs directories
-.idea
-.vscode
-go-musthave-shortener-trainer/
-*.exe
-*.log
-
-# Binaries
 bin/
-shortener
 
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-
-# Test coverage
+# Coverage & Logs
+*.out
 coverage.out
 coverage.html
+*.log
 
-# Environment variables
+# Local data & temp files
+storage.json
+request.json
+16717085
+
+# IDE & OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Env & Dependencies
 .env
+vendor/
