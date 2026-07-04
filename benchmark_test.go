@@ -7,13 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/go-chi/chi/v5"
+	"time"
 
 	"github.com/eugegm01-dev/shortener/internal/config"
 	"github.com/eugegm01-dev/shortener/internal/handler"
 	"github.com/eugegm01-dev/shortener/internal/models"
+	"github.com/eugegm01-dev/shortener/internal/service"
 	"github.com/eugegm01-dev/shortener/internal/storage"
+	"github.com/go-chi/chi/v5"
 )
 
 func BenchmarkMemoryStorageSave(b *testing.B) {
@@ -38,11 +39,10 @@ func BenchmarkMemoryStorageGet(b *testing.B) {
 func BenchmarkShortenURLJSON(b *testing.B) {
 	store := storage.NewMemoryStorage()
 	cfg := &config.Config{BaseURL: "http://localhost:8080"}
-	h := handler.New(store, cfg)
-
+	deleter := service.NewDeleter(store, 100, 5*time.Second)
+	h := handler.New(store, cfg, deleter)
 	reqBody := models.ShortenRequest{URL: "https://practicum.yandex.ru"}
 	bodyBytes, _ := json.Marshal(reqBody)
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/api/shorten", bytes.NewReader(bodyBytes))
@@ -55,16 +55,14 @@ func BenchmarkShortenURLJSON(b *testing.B) {
 func BenchmarkRedirectURL(b *testing.B) {
 	store := storage.NewMemoryStorage()
 	cfg := &config.Config{BaseURL: "http://localhost:8080"}
-	h := handler.New(store, cfg)
-
+	deleter := service.NewDeleter(store, 100, 5*time.Second)
+	h := handler.New(store, cfg, deleter)
 	url := "https://example.com/redirect"
 	id, _, _ := store.Save(url)
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/"+id, nil)
 		rr := httptest.NewRecorder()
-		// Имитируем chi роутер, передавая параметр в контекст
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, &chi.Context{
 			URLParams: chi.RouteParams{Keys: []string{"id"}, Values: []string{id}},
 		}))

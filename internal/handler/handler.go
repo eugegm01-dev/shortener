@@ -2,7 +2,6 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -17,6 +16,7 @@ import (
 	"github.com/eugegm01-dev/shortener/internal/auth"
 	"github.com/eugegm01-dev/shortener/internal/config"
 	"github.com/eugegm01-dev/shortener/internal/models"
+	"github.com/eugegm01-dev/shortener/internal/service"
 	"github.com/eugegm01-dev/shortener/internal/storage"
 	"github.com/eugegm01-dev/shortener/pkg/logger"
 	mw "github.com/eugegm01-dev/shortener/pkg/middleware"
@@ -37,35 +37,27 @@ type Handler struct {
 	storage      storage.Storage
 	cfg          *config.Config
 	auditSubject *audit.Subject
+	deleter      *service.Deleter
 }
 
 // New creates a new Handler with the given storage and configuration.
 // It also initialises audit observers based on config.AuditFile and config.AuditURL.
-func New(storage storage.Storage, cfg *config.Config) *Handler {
+func New(storage storage.Storage, cfg *config.Config, deleter *service.Deleter) *Handler {
 	h := &Handler{
 		storage:      storage,
 		cfg:          cfg,
 		auditSubject: audit.NewSubject(),
+		deleter:      deleter,
 	}
-
-	// Attach file observer if path provided
 	if cfg.AuditFile != "" {
 		fo, err := audit.NewFileObserver(cfg.AuditFile)
-		if err != nil {
-			logger.Logger.Error().Err(err).Str("path", cfg.AuditFile).Msg("Failed to create file audit observer")
-		} else {
+		if err == nil {
 			h.auditSubject.Attach(fo)
-			logger.Logger.Info().Str("path", cfg.AuditFile).Msg("File audit observer enabled")
 		}
 	}
-
-	// Attach HTTP observer if URL provided
 	if cfg.AuditURL != "" {
-		ho := audit.NewHTTPObserver(cfg.AuditURL)
-		h.auditSubject.Attach(ho)
-		logger.Logger.Info().Str("url", cfg.AuditURL).Msg("HTTP audit observer enabled")
+		h.auditSubject.Attach(audit.NewHTTPObserver(cfg.AuditURL))
 	}
-
 	return h
 }
 
@@ -139,21 +131,18 @@ func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-
 	originalURL := string(body)
 	if originalURL == "" {
 		h.sendPlainError(w, "URL cannot be empty", http.StatusBadRequest)
 		return
 	}
-
 	userID, _ := h.getUserIDFromContext(r)
+
 	var id string
 	var created bool
-
-	if storageWithUser, ok := h.storage.(interface {
-		SaveWithUser(url, userID string) (string, bool, error)
-	}); ok && userID != "" {
-		id, created, err = storageWithUser.SaveWithUser(originalURL, userID)
+	// Чистый вызов без Type Assertions
+	if userID != "" {
+		id, created, err = h.storage.SaveWithUser(originalURL, userID)
 	} else {
 		id, created, err = h.storage.Save(originalURL)
 	}
@@ -162,7 +151,6 @@ func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 		h.sendPlainError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	shortURL := fmt.Sprintf("%s/%s", h.cfg.BaseURL, id)
 	w.Header().Set("Content-Type", "text/plain")
 	if !created {
@@ -171,14 +159,7 @@ func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 	}
 	w.Write([]byte(shortURL))
-
-	// Audit event
-	h.auditSubject.Notify(audit.Event{
-		TS:     time.Now().Unix(),
-		Action: "shorten",
-		UserID: userID,
-		URL:    originalURL,
-	})
+	h.auditSubject.Notify(audit.Event{TS: time.Now().Unix(), Action: "shorten", UserID: userID, URL: originalURL})
 }
 
 // ShortenURLJSON handles a JSON POST request and returns the shortened URL.
@@ -191,21 +172,17 @@ func (h *Handler) ShortenURLJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-
 	if req.URL == "" {
 		h.sendJSONError(w, "URL is required", http.StatusBadRequest)
 		return
 	}
-
 	userID, _ := h.getUserIDFromContext(r)
+
 	var id string
 	var created bool
 	var err error
-
-	if storageWithUser, ok := h.storage.(interface {
-		SaveWithUser(url, userID string) (string, bool, error)
-	}); ok && userID != "" {
-		id, created, err = storageWithUser.SaveWithUser(req.URL, userID)
+	if userID != "" {
+		id, created, err = h.storage.SaveWithUser(req.URL, userID)
 	} else {
 		id, created, err = h.storage.Save(req.URL)
 	}
@@ -214,27 +191,15 @@ func (h *Handler) ShortenURLJSON(w http.ResponseWriter, r *http.Request) {
 		h.sendJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	resp := models.ShortenResponse{
-		Result: fmt.Sprintf("%s/%s", h.cfg.BaseURL, id),
-	}
+	resp := models.ShortenResponse{Result: fmt.Sprintf("%s/%s", h.cfg.BaseURL, id)}
 	w.Header().Set("Content-Type", "application/json")
 	if !created {
 		w.WriteHeader(http.StatusConflict)
 	} else {
 		w.WriteHeader(http.StatusCreated)
 	}
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		logger.Logger.Error().Err(err).Msg("Failed to encode JSON response")
-	}
-
-	// Audit event
-	h.auditSubject.Notify(audit.Event{
-		TS:     time.Now().Unix(),
-		Action: "shorten",
-		UserID: userID,
-		URL:    req.URL,
-	})
+	json.NewEncoder(w).Encode(resp)
+	h.auditSubject.Notify(audit.Event{TS: time.Now().Unix(), Action: "shorten", UserID: userID, URL: req.URL})
 }
 
 // RedirectURL redirects short URL to original.
@@ -279,54 +244,37 @@ func (h *Handler) GetUserURLs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if storageWithUser, ok := h.storage.(interface {
-		GetByUser(userID string) ([]models.UserURL, error)
-	}); ok {
-		urls, err := storageWithUser.GetByUser(userID)
-		if err != nil {
-			logger.Logger.Error().Err(err).Str("user_id", userID).Msg("Failed to get user URLs")
-			h.sendJSONError(w, "Internal error", http.StatusInternalServerError)
-			return
-		}
-		if len(urls) == 0 {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		response := make([]map[string]string, len(urls))
-		for i, url := range urls {
-			shortURL := h.cfg.BaseURL + "/" + strings.TrimPrefix(url.ShortURL, "http://localhost:8080/")
-			response[i] = map[string]string{
-				"short_url":    shortURL,
-				"original_url": url.OriginalURL,
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			logger.Logger.Error().Err(err).Msg("Failed to encode user URLs response")
-		}
-	} else {
-		w.WriteHeader(http.StatusNoContent)
+	urls, err := h.storage.GetByUser(userID)
+	if err != nil {
+		h.sendJSONError(w, "Internal error", http.StatusInternalServerError)
+		return
 	}
+	if len(urls) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	response := make([]models.UserURL, len(urls))
+	for i, u := range urls {
+		shortID := strings.TrimPrefix(u.ShortURL, "http://localhost:8080/")
+		response[i] = models.UserURL{
+			ShortURL:    fmt.Sprintf("%s/%s", h.cfg.BaseURL, shortID),
+			OriginalURL: u.OriginalURL,
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
 // ShortenURLBatch shortens multiple URLs in one request.
 func (h *Handler) ShortenURLBatch(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		logger.Logger.Error().Err(err).Msg("Failed to read request body")
-		h.sendJSONError(w, "Cannot read body", http.StatusBadRequest)
-		return
-	}
-	r.Body = io.NopCloser(bytes.NewBuffer(body))
 	var req []models.BatchShortenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		logger.Logger.Error().Err(err).Str("body", string(body)).Msg("JSON decode failed")
 		h.sendJSONError(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 	defer r.Body.Close()
-
 	if len(req) == 0 {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode([]models.BatchShortenResponse{})
@@ -342,7 +290,15 @@ func (h *Handler) ShortenURLBatch(w http.ResponseWriter, r *http.Request) {
 		originalURLs = append(originalURLs, item.OriginalURL)
 	}
 
-	ids, err := h.storage.SaveBatch(originalURLs)
+	userID, _ := h.getUserIDFromContext(r)
+	var ids []string
+	var err error
+	if userID != "" {
+		ids, err = h.storage.SaveBatchWithUser(originalURLs, userID)
+	} else {
+		ids, err = h.storage.SaveBatch(originalURLs)
+	}
+
 	if err != nil {
 		h.sendJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -355,7 +311,6 @@ func (h *Handler) ShortenURLBatch(w http.ResponseWriter, r *http.Request) {
 			ShortURL:      fmt.Sprintf("%s/%s", h.cfg.BaseURL, ids[i]),
 		})
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(resp)
@@ -368,28 +323,14 @@ func (h *Handler) DeleteUserURLs(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-
 	var shortIDs []string
 	if err := json.NewDecoder(r.Body).Decode(&shortIDs); err != nil {
 		h.sendJSONError(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-
-	if len(shortIDs) == 0 {
-		w.WriteHeader(http.StatusAccepted)
-		return
+	if len(shortIDs) > 0 && h.deleter != nil {
+		h.deleter.Enqueue(userID, shortIDs) // Отправляем в фоновый воркер
 	}
-
-	go func() {
-		if storageWithDelete, ok := h.storage.(interface {
-			DeleteUserURLs(userID string, shortIDs []string) error
-		}); ok {
-			if err := storageWithDelete.DeleteUserURLs(userID, shortIDs); err != nil {
-				logger.Logger.Error().Err(err).Str("user_id", userID).Msg("Failed to delete URLs")
-			}
-		}
-	}()
-
 	w.WriteHeader(http.StatusAccepted)
 }
 

@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
+	"io/fs"
+	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/eugegm01-dev/shortener/internal/models"
@@ -17,42 +19,54 @@ type PostgresStorage struct {
 	db *sql.DB
 }
 
-// NewPostgresStorage creates a PostgreSQL storage using the provided DSN.
-// It automatically runs the required migrations.
-func NewPostgresStorage(dsn string) (*PostgresStorage, error) {
+func NewPostgresStorage(dsn string, migrationsFS fs.FS) (*PostgresStorage, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
+	// Настройка пула соединений (Production Standard 2026)
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
 	ps := &PostgresStorage{db: db}
-	if err := ps.runMigrations(); err != nil {
-		logger.Logger.Error().Err(err).Msg("Migration failed, but continuing")
+	if migrationsFS != nil {
+		if err := ps.runMigrations(migrationsFS); err != nil {
+			logger.Logger.Error().Err(err).Msg("Migration failed, but continuing")
+		}
 	}
 	return ps, nil
 }
 
-// runMigrations читает и выполняет SQL-файл миграции
-func (p *PostgresStorage) runMigrations() error {
-	files := []string{
-		"migrations/0001_create_urls_table.up.sql",
-		"migrations/0002_add_unique_original_url.up.sql",
-		"migrations/0003_add_user_id_to_urls.up.sql",
-		"migrations/0004_add_is_deleted_to_urls.up.sql", // ← добавьте
+func (p *PostgresStorage) runMigrations(migrationsFS fs.FS) error {
+	entries, err := fs.ReadDir(migrationsFS, ".")
+	if err != nil {
+		return fmt.Errorf("failed to read migrations directory: %w", err)
 	}
+
+	var files []string
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".sql" {
+			files = append(files, entry.Name())
+		}
+	}
+	sort.Strings(files) // Гарантируем порядок выполнения (0001, 0002...)
+
 	for _, file := range files {
-		content, err := os.ReadFile(file)
+		content, err := fs.ReadFile(migrationsFS, file)
 		if err != nil {
 			return fmt.Errorf("failed to read migration %s: %w", file, err)
 		}
 		if _, err := p.db.Exec(string(content)); err != nil {
-			logger.Logger.Warn().Err(err).Str("file", file).Msg("Migration failed")
+			logger.Logger.Warn().Err(err).Str("file", file).Msg("Migration script failed")
 		}
 	}
 	return nil
 }
+
 func (p *PostgresStorage) Save(url string) (string, bool, error) {
-	return p.SaveWithUser(url, "") // Без пользователя
+	return p.SaveWithUser(url, "")
 }
 
 func (p *PostgresStorage) SaveWithUser(url, userID string) (string, bool, error) {
